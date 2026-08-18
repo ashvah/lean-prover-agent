@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from leanproof.model import GenerationResult
 from leanproof.one_shot import DatasetError, TheoremTask, load_dataset, run_one_shot
 from leanproof.verifier import LeanResult
+from scripts.run_one_shot import _print_progress, build_argument_parser
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -60,8 +62,15 @@ def test_runner_records_raw_and_normalized_output_and_continues(tmp_path) -> Non
     )
     verifier = FakeVerifier()
     output_path = tmp_path / "one_shot.jsonl"
+    progress_messages: list[str] = []
 
-    summary = run_one_shot(tasks, model, verifier, output_path)
+    summary = run_one_shot(
+        tasks,
+        model,
+        verifier,
+        output_path,
+        progress_callback=progress_messages.append,
+    )
     physical_lines = output_path.read_text(encoding="utf-8").splitlines()
     records = [json.loads(line) for line in physical_lines]
 
@@ -80,6 +89,28 @@ def test_runner_records_raw_and_normalized_output_and_continues(tmp_path) -> Non
     assert records[1]["verified"] is False
     assert records[2]["raw_model_output"] == ""
     assert records[2]["error"].startswith("generation_error: RuntimeError")
+    assert progress_messages[0] == "[1/3] valid | generating..."
+    assert progress_messages[1] == "[1/3] valid | generated   | 11 ms"
+    assert progress_messages[2] == "[1/3] valid | verifying..."
+    assert progress_messages[3].startswith("[1/3] valid | PASS")
+    assert progress_messages[7].startswith("[2/3] malformed | FAIL")
+    assert progress_messages[8] == "[3/3] api-error | generating..."
+    assert progress_messages[9].startswith("[3/3] api-error | ERROR")
+    assert all("exact h" not in message for message in progress_messages)
+
+
+@pytest.mark.parametrize("verbose_flag", ["-v", "--verbose"])
+def test_cli_accepts_verbose_aliases(verbose_flag: str) -> None:
+    args = build_argument_parser().parse_args(["--dataset", "data/smoke.jsonl", verbose_flag])
+
+    assert args.verbose is True
+
+
+def test_verbose_printer_flushes_immediately() -> None:
+    with patch("builtins.print") as print_mock:
+        _print_progress("progress")
+
+    print_mock.assert_called_once_with("progress", flush=True)
 
 
 def test_runner_continues_after_verifier_exception(tmp_path) -> None:

@@ -19,6 +19,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dataset", required=True, help="Path to a JSONL theorem dataset")
     parser.add_argument("--limit", type=_positive_integer, help="Run only the first N theorems")
     parser.add_argument("--output", help="Output JSONL path; must not already exist")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Print per-theorem progress")
     return parser
 
 
@@ -36,7 +37,13 @@ def main(argv: list[str] | None = None) -> int:
         config = LLMConfig.from_env(PROJECT_ROOT / ".env")
         model = OpenAICompatibleProofModel(config)
         verifier = LeanVerifier(project_root=PROJECT_ROOT)
-        summary = run_one_shot(tasks, model, verifier, output_path)
+        summary = run_one_shot(
+            tasks,
+            model,
+            verifier,
+            output_path,
+            progress_callback=_print_progress if args.verbose else None,
+        )
     except (ConfigurationError, DatasetError, FileExistsError, OSError, ValueError) as error:
         print(f"Error: {error}", file=sys.stderr)
         return 2
@@ -56,6 +63,10 @@ def _positive_integer(value: str) -> int:
     if parsed_value <= 0:
         raise argparse.ArgumentTypeError("must be greater than zero")
     return parsed_value
+
+
+def _print_progress(message: str) -> None:
+    print(message, flush=True)
 
 
 if __name__ == "__main__":

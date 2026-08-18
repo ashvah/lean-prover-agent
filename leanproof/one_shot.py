@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,6 +23,9 @@ class ProofVerifier(Protocol):
 
     def verify(self, statement: str, proof: str) -> LeanResult:
         """Verify one complete proof and return raw Lean diagnostics."""
+
+
+ProgressCallback = Callable[[str], None]
 
 
 @dataclass(frozen=True)
@@ -127,6 +130,7 @@ def run_one_shot(
     model: ProofModel,
     verifier: ProofVerifier,
     output_path: str | Path,
+    progress_callback: ProgressCallback | None = None,
 ) -> OneShotSummary:
     """Generate and verify each theorem once, recording failures without retrying."""
 
@@ -139,8 +143,15 @@ def run_one_shot(
     verification_latencies: list[int] = []
 
     with destination.open("x", encoding="utf-8", newline="\n") as sink:
-        for task in tasks:
-            result = _run_task_once(task, model, verifier)
+        for index, task in enumerate(tasks, start=1):
+            result = _run_task_once(
+                task,
+                model,
+                verifier,
+                index=index,
+                total=len(tasks),
+                progress_callback=progress_callback,
+            )
             results.append(result)
             if not result.error or not result.error.startswith("generation_error:"):
                 verification_latencies.append(result.verification_latency_ms)
@@ -165,12 +176,29 @@ def run_one_shot(
     )
 
 
-def _run_task_once(task: TheoremTask, model: ProofModel, verifier: ProofVerifier) -> OneShotResult:
+def _run_task_once(
+    task: TheoremTask,
+    model: ProofModel,
+    verifier: ProofVerifier,
+    *,
+    index: int,
+    total: int,
+    progress_callback: ProgressCallback | None,
+) -> OneShotResult:
+    progress_prefix = f"[{index}/{total}] {task.theorem_id}"
+    _report_progress(progress_callback, f"{progress_prefix} | generating...")
     started = time.perf_counter()
     generation_started = time.perf_counter()
     try:
         generation = model.generate_proof(task.statement)
     except Exception as error:  # noqa: BLE001
+        generation_latency_ms = _elapsed_ms(generation_started)
+        total_latency_ms = _elapsed_ms(started)
+        _report_progress(
+            progress_callback,
+            f"{progress_prefix} | ERROR       | generation {generation_latency_ms} ms | "
+            f"total {total_latency_ms} ms",
+        )
         return OneShotResult(
             theorem_id=task.theorem_id,
             statement=task.statement,
@@ -180,22 +208,48 @@ def _run_task_once(task: TheoremTask, model: ProofModel, verifier: ProofVerifier
             verified=False,
             lean_stdout="",
             lean_stderr="",
-            generation_latency_ms=_elapsed_ms(generation_started),
+            generation_latency_ms=generation_latency_ms,
             verification_latency_ms=0,
-            total_latency_ms=_elapsed_ms(started),
+            total_latency_ms=total_latency_ms,
             prompt_tokens=None,
             completion_tokens=None,
             error=f"generation_error: {type(error).__name__}: {error}",
         )
 
+    _report_progress(
+        progress_callback,
+        f"{progress_prefix} | generated   | {generation.latency_ms} ms",
+    )
     normalized_proof = normalize_proof(generation.raw_output)
+    _report_progress(progress_callback, f"{progress_prefix} | verifying...")
+    verification_started = time.perf_counter()
     try:
         verification = verifier.verify(task.statement, normalized_proof)
     except Exception as error:  # noqa: BLE001
+        verification_latency_ms = _elapsed_ms(verification_started)
+        total_latency_ms = _elapsed_ms(started)
+        _report_progress(
+            progress_callback,
+            f"{progress_prefix} | FAIL        | verify {verification_latency_ms} ms | "
+            f"total {total_latency_ms} ms",
+        )
         return _verification_exception_result(
-            task, model, generation, normalized_proof, started, error
+            task,
+            model,
+            generation,
+            normalized_proof,
+            total_latency_ms,
+            verification_latency_ms,
+            error,
         )
 
+    total_latency_ms = _elapsed_ms(started)
+    status = "PASS" if verification.success else "FAIL"
+    _report_progress(
+        progress_callback,
+        f"{progress_prefix} | {status:<11} | verify {verification.elapsed_ms} ms | "
+        f"total {total_latency_ms} ms",
+    )
     return OneShotResult(
         theorem_id=task.theorem_id,
         statement=task.statement,
@@ -207,7 +261,7 @@ def _run_task_once(task: TheoremTask, model: ProofModel, verifier: ProofVerifier
         lean_stderr=verification.stderr,
         generation_latency_ms=generation.latency_ms,
         verification_latency_ms=verification.elapsed_ms,
-        total_latency_ms=_elapsed_ms(started),
+        total_latency_ms=total_latency_ms,
         prompt_tokens=generation.prompt_tokens,
         completion_tokens=generation.completion_tokens,
         error=None,
@@ -219,7 +273,8 @@ def _verification_exception_result(
     model: ProofModel,
     generation: GenerationResult,
     normalized_proof: str,
-    started: float,
+    total_latency_ms: int,
+    verification_latency_ms: int,
     error: Exception,
 ) -> OneShotResult:
     return OneShotResult(
@@ -232,8 +287,8 @@ def _verification_exception_result(
         lean_stdout="",
         lean_stderr="",
         generation_latency_ms=generation.latency_ms,
-        verification_latency_ms=0,
-        total_latency_ms=_elapsed_ms(started),
+        verification_latency_ms=verification_latency_ms,
+        total_latency_ms=total_latency_ms,
         prompt_tokens=generation.prompt_tokens,
         completion_tokens=generation.completion_tokens,
         error=f"verification_error: {type(error).__name__}: {error}",
@@ -242,3 +297,8 @@ def _verification_exception_result(
 
 def _elapsed_ms(started: float) -> int:
     return round((time.perf_counter() - started) * 1000)
+
+
+def _report_progress(progress_callback: ProgressCallback | None, message: str) -> None:
+    if progress_callback is not None:
+        progress_callback(message)
