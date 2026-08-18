@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
@@ -11,7 +12,7 @@ from pathlib import Path
 from typing import Protocol
 
 from leanproof.model import GenerationResult, ProofModel, normalize_proof
-from leanproof.verifier import LeanResult
+from leanproof.verifier import LeanResult, VerificationStatus
 
 
 class DatasetError(ValueError):
@@ -42,10 +43,15 @@ class OneShotResult:
 
     theorem_id: str
     statement: str
+    model_alias: str
     model: str
     raw_model_output: str
+    reasoning_output: str | None
+    proof_output: str
     normalized_proof: str
+    verification_status: str | None
     verified: bool
+    has_sorry: bool
     lean_stdout: str
     lean_stderr: str
     generation_latency_ms: int
@@ -117,12 +123,16 @@ def load_dataset(dataset_path: str | Path, *, limit: int | None = None) -> list[
     return tasks[:limit]
 
 
-def default_output_path(dataset_path: str | Path, output_directory: str | Path) -> Path:
+def default_output_path(
+    dataset_path: str | Path, model_alias: str, output_directory: str | Path
+) -> Path:
     """Build a timestamped output path without provider or credential data."""
 
+    if re.fullmatch(r"[a-z][a-z0-9_]*", model_alias) is None:
+        raise ValueError("model_alias is not safe for an output filename")
     timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%SZ")
     dataset_name = Path(dataset_path).stem
-    return Path(output_directory) / f"one_shot_{dataset_name}_{timestamp}.jsonl"
+    return Path(output_directory) / f"one_shot_{dataset_name}_{model_alias}_{timestamp}.jsonl"
 
 
 def run_one_shot(
@@ -130,6 +140,8 @@ def run_one_shot(
     model: ProofModel,
     verifier: ProofVerifier,
     output_path: str | Path,
+    *,
+    model_alias: str,
     progress_callback: ProgressCallback | None = None,
 ) -> OneShotSummary:
     """Generate and verify each theorem once, recording failures without retrying."""
@@ -148,6 +160,7 @@ def run_one_shot(
                 task,
                 model,
                 verifier,
+                model_alias=model_alias,
                 index=index,
                 total=len(tasks),
                 progress_callback=progress_callback,
@@ -181,6 +194,7 @@ def _run_task_once(
     model: ProofModel,
     verifier: ProofVerifier,
     *,
+    model_alias: str,
     index: int,
     total: int,
     progress_callback: ProgressCallback | None,
@@ -202,10 +216,15 @@ def _run_task_once(
         return OneShotResult(
             theorem_id=task.theorem_id,
             statement=task.statement,
+            model_alias=model_alias,
             model=model.model_name,
             raw_model_output="",
+            reasoning_output=None,
+            proof_output="",
             normalized_proof="",
+            verification_status=None,
             verified=False,
+            has_sorry=False,
             lean_stdout="",
             lean_stderr="",
             generation_latency_ms=generation_latency_ms,
@@ -220,7 +239,7 @@ def _run_task_once(
         progress_callback,
         f"{progress_prefix} | generated   | {generation.latency_ms} ms",
     )
-    normalized_proof = normalize_proof(generation.raw_output)
+    normalized_proof = normalize_proof(generation.proof_output)
     _report_progress(progress_callback, f"{progress_prefix} | verifying...")
     verification_started = time.perf_counter()
     try:
@@ -238,25 +257,32 @@ def _run_task_once(
             model,
             generation,
             normalized_proof,
+            model_alias,
             total_latency_ms,
             verification_latency_ms,
             error,
         )
 
     total_latency_ms = _elapsed_ms(started)
-    status = "PASS" if verification.success else "FAIL"
+    benchmark_status = "PASS" if verification.verified else "FAIL"
     _report_progress(
         progress_callback,
-        f"{progress_prefix} | {status:<11} | verify {verification.elapsed_ms} ms | "
+        f"{progress_prefix} | {benchmark_status:<11} | verifier "
+        f"{verification.status.value.upper()} | verify {verification.elapsed_ms} ms | "
         f"total {total_latency_ms} ms",
     )
     return OneShotResult(
         theorem_id=task.theorem_id,
         statement=task.statement,
+        model_alias=model_alias,
         model=model.model_name,
         raw_model_output=generation.raw_output,
+        reasoning_output=generation.reasoning_output,
+        proof_output=generation.proof_output,
         normalized_proof=normalized_proof,
-        verified=verification.success,
+        verification_status=verification.status.value,
+        verified=verification.verified,
+        has_sorry=verification.has_sorry,
         lean_stdout=verification.stdout,
         lean_stderr=verification.stderr,
         generation_latency_ms=generation.latency_ms,
@@ -273,6 +299,7 @@ def _verification_exception_result(
     model: ProofModel,
     generation: GenerationResult,
     normalized_proof: str,
+    model_alias: str,
     total_latency_ms: int,
     verification_latency_ms: int,
     error: Exception,
@@ -280,10 +307,15 @@ def _verification_exception_result(
     return OneShotResult(
         theorem_id=task.theorem_id,
         statement=task.statement,
+        model_alias=model_alias,
         model=model.model_name,
         raw_model_output=generation.raw_output,
+        reasoning_output=generation.reasoning_output,
+        proof_output=generation.proof_output,
         normalized_proof=normalized_proof,
+        verification_status=VerificationStatus.EXECUTION_ERROR.value,
         verified=False,
+        has_sorry=False,
         lean_stdout="",
         lean_stderr="",
         generation_latency_ms=generation.latency_ms,

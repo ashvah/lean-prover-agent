@@ -28,6 +28,13 @@ class ResultSummary:
     average_generation_latency_ms: float
     average_verification_latency_ms: float
     average_total_latency_ms: float
+    total_prompt_tokens: int | None
+    total_completion_tokens: int | None
+    total_tokens: int | None
+    average_prompt_tokens: float | None
+    average_completion_tokens: float | None
+    average_total_tokens: float | None
+    token_usage_available: int
 
 
 @dataclass(frozen=True)
@@ -74,7 +81,16 @@ def calculate_summary(records: Sequence[dict[str, object]]) -> ResultSummary:
     models = sorted({_text(record.get("model")) or "unknown" for record in records})
     model = models[0] if len(models) == 1 else ", ".join(models)
     total = len(records)
-    solved = sum(record.get("verified") is True for record in records)
+    solved = sum(_benchmark_verified(record) for record in records)
+    prompt_tokens = [_token_value(record.get("prompt_tokens")) for record in records]
+    completion_tokens = [_token_value(record.get("completion_tokens")) for record in records]
+    available_prompt_tokens = [value for value in prompt_tokens if value is not None]
+    available_completion_tokens = [value for value in completion_tokens if value is not None]
+    available_total_tokens = [
+        prompt + completion
+        for prompt, completion in zip(prompt_tokens, completion_tokens, strict=True)
+        if prompt is not None and completion is not None
+    ]
     return ResultSummary(
         model=model,
         total=total,
@@ -84,6 +100,13 @@ def calculate_summary(records: Sequence[dict[str, object]]) -> ResultSummary:
         average_generation_latency_ms=_average_latency(records, "generation_latency_ms"),
         average_verification_latency_ms=_average_latency(records, "verification_latency_ms"),
         average_total_latency_ms=_average_latency(records, "total_latency_ms"),
+        total_prompt_tokens=_optional_sum(available_prompt_tokens),
+        total_completion_tokens=_optional_sum(available_completion_tokens),
+        total_tokens=_optional_sum(available_total_tokens),
+        average_prompt_tokens=_optional_average(available_prompt_tokens),
+        average_completion_tokens=_optional_average(available_completion_tokens),
+        average_total_tokens=_optional_average(available_total_tokens),
+        token_usage_available=len(available_total_tokens),
     )
 
 
@@ -93,6 +116,7 @@ def build_html(
     """Render escaped result records into a self-contained HTML document."""
 
     cards = "\n".join(_render_result_card(record) for record in records)
+    token_chart = _render_token_chart(records)
     summary_html = f"""
 <section class="summary" aria-label="Experiment summary">
   <div><span>Model</span><strong>{_escape(summary.model)}</strong></div>
@@ -103,15 +127,23 @@ def build_html(
   <div><span>Avg generation</span><strong>{summary.average_generation_latency_ms:.1f} ms</strong></div>
   <div><span>Avg verification</span><strong>{summary.average_verification_latency_ms:.1f} ms</strong></div>
   <div><span>Avg total</span><strong>{summary.average_total_latency_ms:.1f} ms</strong></div>
+  <div><span>Total prompt tokens</span><strong>{_format_token(summary.total_prompt_tokens)}</strong></div>
+  <div><span>Total completion tokens</span><strong>{_format_token(summary.total_completion_tokens)}</strong></div>
+  <div><span>Total tokens</span><strong>{_format_token(summary.total_tokens)}</strong></div>
+  <div><span>Avg prompt tokens / available theorem</span><strong>{_format_optional_number(summary.average_prompt_tokens)}</strong></div>
+  <div><span>Avg completion tokens / available theorem</span><strong>{_format_optional_number(summary.average_completion_tokens)}</strong></div>
+  <div><span>Avg total tokens / available theorem</span><strong>{_format_optional_number(summary.average_total_tokens)}</strong></div>
+  <div><span>Token usage available</span><strong>{summary.token_usage_available} / {summary.total} tasks</strong></div>
 </section>""".strip()
     replacements = {
         "TITLE": _escape(f"LeanProof results — {source_name}"),
         "SOURCE": _escape(source_name),
         "SUMMARY": summary_html,
+        "TOKEN_CHART": token_chart,
         "CARDS": cards,
     }
     return re.sub(
-        r"__(TITLE|SOURCE|SUMMARY|CARDS)__",
+        r"__(TITLE|SOURCE|SUMMARY|TOKEN_CHART|CARDS)__",
         lambda match: replacements[match.group(1)],
         _HTML_TEMPLATE,
     )
@@ -214,39 +246,73 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _render_result_card(record: dict[str, object]) -> str:
-    passed = record.get("verified") is True
-    status = "PASS" if passed else "FAIL"
-    status_key = "passed" if passed else "failed"
+    passed = _benchmark_verified(record)
+    benchmark_status = "PASS" if passed else "FAIL"
+    benchmark_key = "passed" if passed else "failed"
+    verification_status = _verification_status_label(record)
+    verification_key = _verification_status_key(record)
     theorem_id = _text(record.get("theorem_id"))
     statement = _text(record.get("statement"))
     search_text = f"{theorem_id} {statement}".casefold()
+    proof_output = (
+        _text(record.get("proof_output"))
+        if "proof_output" in record
+        else _text(record.get("normalized_proof"))
+    )
+    reasoning_output = _text(record.get("reasoning_output"))
+    reasoning_html = (
+        f"""
+  <details>
+    <summary>Reasoning</summary>
+    <pre><code>{_escape(reasoning_output)}</code></pre>
+  </details>""".rstrip()
+        if reasoning_output
+        else ""
+    )
     runner_error = _text(record.get("error"))
     runner_error_html = (
         f"<h4>Runner diagnostic</h4><pre><code>{_escape(runner_error)}</code></pre>"
         if runner_error
         else ""
     )
+    prompt_tokens = _token_value(record.get("prompt_tokens"))
+    completion_tokens = _token_value(record.get("completion_tokens"))
+    total_tokens = (
+        prompt_tokens + completion_tokens
+        if prompt_tokens is not None and completion_tokens is not None
+        else None
+    )
     return f"""
-<article class="result-card {status_key}" data-status="{status_key}" data-search="{_escape(search_text)}">
+<article class="result-card {benchmark_key}" data-status="{benchmark_key}" data-search="{_escape(search_text)}">
   <header>
     <h2>{_escape(theorem_id)}</h2>
-    <span class="status {status_key}">{status}</span>
+    <span class="status {benchmark_key}">{benchmark_status}</span>
   </header>
+  <p class="verification-status">Verifier status: <strong class="verifier-{verification_key}">{_escape(verification_status)}</strong></p>
+  <p class="benchmark-result">Benchmark result: <strong>{benchmark_status}</strong></p>
   <dl class="latencies">
     <div><dt>Generation</dt><dd>{_format_latency(record.get("generation_latency_ms"))} ms</dd></div>
     <div><dt>Verification</dt><dd>{_format_latency(record.get("verification_latency_ms"))} ms</dd></div>
     <div><dt>Total</dt><dd>{_format_latency(record.get("total_latency_ms"))} ms</dd></div>
   </dl>
+  <dl class="tokens">
+    <div><dt>Prompt tokens</dt><dd>{_format_token(prompt_tokens)}</dd></div>
+    <div><dt>Completion tokens</dt><dd>{_format_token(completion_tokens)}</dd></div>
+    <div><dt>Total tokens</dt><dd>{_format_token(total_tokens)}</dd></div>
+  </dl>
   <h3>Theorem statement</h3>
   <pre><code>{_escape(statement)}</code></pre>
+  <h3>Proof output</h3>
+  <pre><code>{_escape(proof_output)}</code></pre>
   <h3>Normalized Lean proof</h3>
   <pre><code>{_escape(record.get("normalized_proof"))}</code></pre>
+  {reasoning_html}
   <details>
     <summary>Raw model output</summary>
     <pre><code>{_escape(record.get("raw_model_output"))}</code></pre>
   </details>
   <details>
-    <summary>Lean stdout/stderr</summary>
+    <summary>Lean diagnostics</summary>
     <h4>stdout</h4>
     <pre><code>{_escape(record.get("lean_stdout"))}</code></pre>
     <h4>stderr</h4>
@@ -256,8 +322,42 @@ def _render_result_card(record: dict[str, object]) -> str:
 </article>""".strip()
 
 
+def _render_token_chart(records: Sequence[dict[str, object]]) -> str:
+    totals = [_record_total_tokens(record) for record in records]
+    available_totals = [value for value in totals if value is not None]
+    maximum_total = max(available_totals, default=0)
+    rows: list[str] = []
+    for record, total in zip(records, totals, strict=True):
+        theorem_id = _escape(record.get("theorem_id"))
+        prompt = _token_value(record.get("prompt_tokens"))
+        completion = _token_value(record.get("completion_tokens"))
+        if total is None or maximum_total == 0 or prompt is None or completion is None:
+            bar = '<span class="token-unavailable">unavailable</span>'
+        else:
+            prompt_width = 100.0 * prompt / maximum_total
+            completion_width = 100.0 * completion / maximum_total
+            bar = (
+                '<span class="token-bar" aria-hidden="true">'
+                f'<span class="token-prompt" style="width:{prompt_width:.3f}%"></span>'
+                f'<span class="token-completion" style="width:{completion_width:.3f}%"></span>'
+                "</span>"
+                f'<span class="token-count">{total}</span>'
+            )
+        rows.append(
+            f'<div class="token-row"><span class="token-theorem">{theorem_id}</span>{bar}</div>'
+        )
+    return (
+        '<section class="token-chart" aria-label="Token usage by theorem">'
+        "<h2>Token usage by theorem</h2>"
+        '<p class="token-legend"><span>Prompt</span><span>Completion</span></p>'
+        f"{''.join(rows)}"
+        "</section>"
+    )
+
+
 def _render_lean_record(record: dict[str, object]) -> list[str]:
-    status = "PASS" if record.get("verified") is True else "FAIL"
+    status = _verification_status_label(record)
+    benchmark_verified = _benchmark_verified(record)
     theorem_id = _lean_comment_text(record.get("theorem_id"))
     statement = _text(record.get("statement"))
     normalized_proof = _text(record.get("normalized_proof"))
@@ -267,6 +367,7 @@ def _render_lean_record(record: dict[str, object]) -> list[str]:
             "/-",
             f"theorem_id: {theorem_id}",
             f"status: {status}",
+            f"benchmark_verified: {str(benchmark_verified).lower()}",
             "No normalized proof was produced because generation failed.",
             "statement:",
             _lean_comment_text(statement),
@@ -279,6 +380,7 @@ def _render_lean_record(record: dict[str, object]) -> list[str]:
         "/-",
         f"theorem_id: {theorem_id}",
         f"status: {status}",
+        f"benchmark_verified: {str(benchmark_verified).lower()}",
         "-/",
         "",
         f"{statement} := {normalized_proof}",
@@ -298,6 +400,69 @@ def _numeric_value(value: object) -> float:
 
 def _format_latency(value: object) -> str:
     return f"{_numeric_value(value):.1f}"
+
+
+def _token_value(value: object) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None
+
+
+def _record_total_tokens(record: dict[str, object]) -> int | None:
+    prompt = _token_value(record.get("prompt_tokens"))
+    completion = _token_value(record.get("completion_tokens"))
+    if prompt is None or completion is None:
+        return None
+    return prompt + completion
+
+
+def _optional_sum(values: Sequence[int]) -> int | None:
+    return sum(values) if values else None
+
+
+def _optional_average(values: Sequence[int]) -> float | None:
+    return sum(values) / len(values) if values else None
+
+
+def _format_token(value: int | None) -> str:
+    return str(value) if value is not None else "unavailable"
+
+
+def _format_optional_number(value: float | None) -> str:
+    return f"{value:.1f}" if value is not None else "unavailable"
+
+
+def _benchmark_verified(record: dict[str, object]) -> bool:
+    status = record.get("verification_status")
+    if isinstance(status, str) and status:
+        return status.lower() == "verified"
+    return record.get("verified") is True
+
+
+def _verification_status_label(record: dict[str, object]) -> str:
+    status = record.get("verification_status")
+    if isinstance(status, str) and status:
+        return status.upper()
+    if "verification_status" in record and _text(record.get("error")).startswith(
+        "generation_error:"
+    ):
+        return "NOT RUN"
+    if "verification_status" not in record and record.get("verified") is True:
+        return "VERIFIED (LEGACY)"
+    return "UNKNOWN / LEGACY"
+
+
+def _verification_status_key(record: dict[str, object]) -> str:
+    status = record.get("verification_status")
+    if isinstance(status, str) and status in {
+        "verified",
+        "incomplete",
+        "rejected",
+        "timeout",
+        "execution_error",
+    }:
+        return status.replace("_", "-")
+    return "unknown"
 
 
 def _text(value: object) -> str:
@@ -342,16 +507,33 @@ _HTML_TEMPLATE = """<!doctype html>
     .status { padding: .25rem .55rem; border-radius: 999px; color: white; font-weight: 700; }
     .status.passed { background: #198754; }
     .status.failed { background: #c9362b; }
-    .latencies { display: flex; flex-wrap: wrap; gap: 1.25rem; margin: .8rem 0; }
-    .latencies div { display: flex; gap: .35rem; }
-    .latencies dd { margin: 0; }
+    .verification-status, .benchmark-result { margin: .5rem 0; }
+    .verifier-verified { color: #198754; }
+    .verifier-incomplete { color: #ad6500; }
+    .verifier-rejected, .verifier-timeout, .verifier-execution-error { color: #c9362b; }
+    .verifier-unknown { color: #667085; }
+    .latencies, .tokens { display: flex; flex-wrap: wrap; gap: 1.25rem; margin: .8rem 0; }
+    .latencies div, .tokens div { display: flex; gap: .35rem; }
+    .latencies dd, .tokens dd { margin: 0; }
+    .token-chart { margin: 1.5rem 0; padding: 1rem; border: 1px solid #d8dee9; border-radius: .5rem; background: white; }
+    .token-chart h2 { margin-top: 0; }
+    .token-legend { display: flex; gap: 1rem; font-size: .85rem; }
+    .token-legend span:first-child::before, .token-legend span:last-child::before { content: ""; display: inline-block; width: .75rem; height: .75rem; margin-right: .3rem; }
+    .token-legend span:first-child::before { background: #4f7cff; }
+    .token-legend span:last-child::before { background: #8b5cf6; }
+    .token-row { display: grid; grid-template-columns: minmax(120px, 1fr) 3fr auto; gap: .65rem; align-items: center; margin: .45rem 0; }
+    .token-theorem { overflow-wrap: anywhere; }
+    .token-bar { display: flex; height: .8rem; border-radius: 999px; overflow: hidden; background: #e5e7eb; }
+    .token-prompt { background: #4f7cff; }
+    .token-completion { background: #8b5cf6; }
+    .token-count, .token-unavailable { font-variant-numeric: tabular-nums; color: #667085; }
     pre { overflow-x: auto; padding: .85rem; border-radius: .4rem; background: #111827; color: #e5e7eb; white-space: pre-wrap; overflow-wrap: anywhere; }
     details { margin-top: .75rem; }
     summary { cursor: pointer; font-weight: 650; }
     [hidden] { display: none !important; }
     @media (prefers-color-scheme: dark) {
       body { background: #111827; color: #e5e7eb; }
-      .summary div, button, .result-card { background: #1f2937; border-color: #4b5563; }
+      .summary div, button, .result-card, .token-chart { background: #1f2937; border-color: #4b5563; }
       .source, .summary span, dt { color: #aeb7c5; }
     }
   </style>
@@ -360,6 +542,7 @@ _HTML_TEMPLATE = """<!doctype html>
   <h1>LeanProof-Agent results</h1>
   <p class="source">Source: __SOURCE__</p>
   __SUMMARY__
+  __TOKEN_CHART__
   <section class="controls" aria-label="Result filters">
     <button type="button" class="active" data-filter="all">All</button>
     <button type="button" data-filter="passed">Passed</button>

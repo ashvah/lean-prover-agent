@@ -2,23 +2,59 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
 import tempfile
 import time
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
+
+
+class VerificationStatus(str, Enum):
+    """Lean environment outcome for one submitted declaration."""
+
+    VERIFIED = "verified"
+    INCOMPLETE = "incomplete"
+    REJECTED = "rejected"
+    TIMEOUT = "timeout"
+    EXECUTION_ERROR = "execution_error"
 
 
 @dataclass(frozen=True)
 class LeanResult:
-    """Raw result of one Lean verification call."""
+    """Status and raw diagnostics from one Lean verification call."""
 
-    success: bool
+    status: VerificationStatus
     stdout: str
     stderr: str
     elapsed_ms: int
+
+    @property
+    def verified(self) -> bool:
+        """Return whether Lean accepted a complete proof without placeholders."""
+
+        return self.status is VerificationStatus.VERIFIED
+
+    @property
+    def accepted(self) -> bool:
+        """Return whether Lean accepted the declaration, complete or incomplete."""
+
+        return self.status in {VerificationStatus.VERIFIED, VerificationStatus.INCOMPLETE}
+
+    @property
+    def has_sorry(self) -> bool:
+        """Return whether Lean reported that the declaration depends on ``sorryAx``."""
+
+        return self.status is VerificationStatus.INCOMPLETE
+
+    @property
+    def success(self) -> bool:
+        """Compatibility alias that is true only for a complete verified proof."""
+
+        return self.verified
 
 
 class LeanVerifier:
@@ -28,7 +64,7 @@ class LeanVerifier:
         self,
         project_root: str | Path | None = None,
         *,
-        timeout_seconds: float = 60.0,
+        timeout_seconds: float = 120.0,
         lake_executable: str | Path | None = None,
     ) -> None:
         self.project_root = Path(project_root or Path.cwd()).resolve()
@@ -49,7 +85,7 @@ class LeanVerifier:
         with tempfile.TemporaryDirectory(prefix="leanproof-") as temp_dir:
             source_path = Path(temp_dir) / "Temp.lean"
             source_path.write_text(source, encoding="utf-8")
-            command = [self.lake_executable, "env", "lean", str(source_path)]
+            command = [self.lake_executable, "env", "lean", "--json", str(source_path)]
 
             try:
                 completed = subprocess.run(
@@ -65,7 +101,7 @@ class LeanVerifier:
                 )
             except subprocess.TimeoutExpired as error:
                 return LeanResult(
-                    success=False,
+                    status=VerificationStatus.TIMEOUT,
                     stdout=self._output_text(error.stdout),
                     stderr=(
                         self._output_text(error.stderr) + f"Lean verification timed out after "
@@ -73,16 +109,17 @@ class LeanVerifier:
                     ),
                     elapsed_ms=self._elapsed_ms(started),
                 )
-            except OSError as error:
+            except (OSError, subprocess.SubprocessError) as error:
                 return LeanResult(
-                    success=False,
+                    status=VerificationStatus.EXECUTION_ERROR,
                     stdout="",
                     stderr=f"Failed to start Lean verifier: {error}",
                     elapsed_ms=self._elapsed_ms(started),
                 )
 
+        status = self._classify_status(completed.returncode, completed.stdout, completed.stderr)
         return LeanResult(
-            success=completed.returncode == 0,
+            status=status,
             stdout=completed.stdout,
             stderr=completed.stderr,
             elapsed_ms=self._elapsed_ms(started),
@@ -120,3 +157,26 @@ class LeanVerifier:
         if isinstance(output, bytes):
             return output.decode("utf-8", errors="replace")
         return output
+
+    @staticmethod
+    def _classify_status(returncode: int, stdout: str, stderr: str) -> VerificationStatus:
+        diagnostics = LeanVerifier._lean_diagnostics(stdout, stderr)
+        if returncode != 0:
+            return (
+                VerificationStatus.REJECTED if diagnostics else VerificationStatus.EXECUTION_ERROR
+            )
+        if any(diagnostic.get("kind") == "hasSorry" for diagnostic in diagnostics):
+            return VerificationStatus.INCOMPLETE
+        return VerificationStatus.VERIFIED
+
+    @staticmethod
+    def _lean_diagnostics(stdout: str, stderr: str) -> list[dict[str, object]]:
+        diagnostics: list[dict[str, object]] = []
+        for line in (*stdout.splitlines(), *stderr.splitlines()):
+            try:
+                diagnostic = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(diagnostic, dict) and "severity" in diagnostic:
+                diagnostics.append(diagnostic)
+        return diagnostics

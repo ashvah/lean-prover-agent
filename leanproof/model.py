@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 import time
 from dataclasses import dataclass
@@ -10,7 +9,6 @@ from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urlparse
 
-from dotenv import load_dotenv
 from openai import OpenAI
 
 BASELINE_PROMPT_TEMPLATE = """Complete the following Lean 4 theorem.
@@ -29,10 +27,14 @@ _FENCED_PROOF_PATTERN = re.compile(
     r"\A```(?:lean)?[ \t]*\r?\n(?P<proof>.*)\r?\n```[ \t]*\Z",
     flags=re.IGNORECASE | re.DOTALL,
 )
+_LEADING_THINK_PATTERN = re.compile(
+    r"\A[ \t\r\n]*<think>(?P<reasoning>.*?)</think>(?P<answer>.*)\Z",
+    flags=re.DOTALL,
+)
 
 
 class ConfigurationError(ValueError):
-    """Raised when required global LLM configuration is missing or invalid."""
+    """Raised when an LLM configuration is missing or invalid."""
 
 
 class ProofGenerationError(RuntimeError):
@@ -46,15 +48,20 @@ class LLMConfig:
     api_key: str
     base_url: str
     model: str
+    reasoning_split: bool = False
 
-    @classmethod
-    def from_env(cls, dotenv_path: str | Path | None = None) -> LLMConfig:
-        """Load configuration from environment variables and an optional `.env` file."""
+    def __post_init__(self) -> None:
+        """Validate values regardless of which registry or test created the configuration."""
 
-        load_dotenv(dotenv_path=dotenv_path, override=False)
-        api_key = _required_environment_value("LLM_API_KEY")
-        base_url = _required_environment_value("LLM_BASE_URL")
-        model = _required_environment_value("LLM_MODEL")
+        api_key = self.api_key.strip()
+        base_url = self.base_url.strip()
+        model = self.model.strip()
+        if not api_key:
+            raise ConfigurationError("api_key must not be empty")
+        if not base_url:
+            raise ConfigurationError("base_url must not be empty")
+        if not model:
+            raise ConfigurationError("model must not be empty")
 
         parsed_url = urlparse(base_url)
         if (
@@ -64,17 +71,20 @@ class LLMConfig:
             or parsed_url.fragment
         ):
             raise ConfigurationError(
-                "LLM_BASE_URL must be an absolute HTTP(S) URL without a query or fragment"
+                "base_url must be an absolute HTTP(S) URL without a query or fragment"
             )
-
-        return cls(api_key=api_key, base_url=base_url.rstrip("/"), model=model)
+        object.__setattr__(self, "api_key", api_key)
+        object.__setattr__(self, "base_url", base_url.rstrip("/"))
+        object.__setattr__(self, "model", model)
 
 
 @dataclass(frozen=True)
 class GenerationResult:
-    """One provider generation with raw output, latency, and optional token usage."""
+    """One provider generation split into original, reasoning, and final-answer text."""
 
     raw_output: str
+    proof_output: str
+    reasoning_output: str | None
     latency_ms: int
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
@@ -113,23 +123,33 @@ class OpenAICompatibleProofModel:
         """Make one provider request and preserve its textual output unchanged."""
 
         started = time.perf_counter()
+        request: dict[str, object] = {
+            "model": self._config.model,
+            "messages": [{"role": "user", "content": build_baseline_prompt(statement)}],
+        }
+        if self._config.reasoning_split:
+            request["extra_body"] = {"reasoning_split": True}
         response = self._client.chat.completions.create(
-            model=self._config.model,
-            messages=[{"role": "user", "content": build_baseline_prompt(statement)}],
+            **request,
         )
         latency_ms = round((time.perf_counter() - started) * 1000)
 
         try:
-            raw_output = response.choices[0].message.content
+            message = response.choices[0].message
+            raw_output = message.content
         except (AttributeError, IndexError) as error:
             raise ProofGenerationError("Provider response did not contain a completion") from error
 
         if not isinstance(raw_output, str):
             raise ProofGenerationError("Provider completion did not contain text")
 
+        proof_output, tagged_reasoning = split_leading_think_block(raw_output)
+        dedicated_reasoning = _dedicated_reasoning_output(message)
         usage = getattr(response, "usage", None)
         return GenerationResult(
             raw_output=raw_output,
+            proof_output=proof_output,
+            reasoning_output=dedicated_reasoning or tagged_reasoning,
             latency_ms=latency_ms,
             prompt_tokens=getattr(usage, "prompt_tokens", None),
             completion_tokens=getattr(usage, "completion_tokens", None),
@@ -152,8 +172,28 @@ def normalize_proof(raw_output: str) -> str:
     return stripped_output
 
 
-def _required_environment_value(name: str) -> str:
-    value = os.getenv(name, "").strip()
-    if not value:
-        raise ConfigurationError(f"Missing required environment variable: {name}")
-    return value
+def split_leading_think_block(raw_output: str) -> tuple[str, str | None]:
+    """Conservatively split one complete leading ``<think>`` block from final output."""
+
+    match = _LEADING_THINK_PATTERN.fullmatch(raw_output)
+    if match is None:
+        return raw_output, None
+    return match.group("answer").lstrip(), match.group("reasoning").strip()
+
+
+def _dedicated_reasoning_output(message: Any) -> str | None:
+    reasoning_details = getattr(message, "reasoning_details", None)
+    if isinstance(reasoning_details, list):
+        text_parts: list[str] = []
+        for detail in reasoning_details:
+            text = detail.get("text") if isinstance(detail, dict) else getattr(detail, "text", None)
+            if isinstance(text, str):
+                text_parts.append(text)
+        if text_parts:
+            return "\n".join(text_parts)
+
+    for field_name in ("reasoning_content", "reasoning"):
+        value = getattr(message, field_name, None)
+        if isinstance(value, str) and value:
+            return value
+    return None

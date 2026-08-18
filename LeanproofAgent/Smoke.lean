@@ -13,3 +13,6 @@ example (p : Prop) (h : p) : p := by
 
 example (x : ℝ) : (x + 1)^2 = x^2 + 2*x + 1 := by
   ring
+
+example (x : ℝ) : x^2 + 2*x + 1 = (x + 1)^2 := by
+  sorry

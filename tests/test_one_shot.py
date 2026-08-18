@@ -8,7 +8,7 @@ import pytest
 
 from leanproof.model import GenerationResult
 from leanproof.one_shot import DatasetError, TheoremTask, load_dataset, run_one_shot
-from leanproof.verifier import LeanResult
+from leanproof.verifier import LeanResult, VerificationStatus
 from scripts.run_one_shot import DEFAULT_RESULTS_DIRECTORY, _print_progress, build_argument_parser
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -51,12 +51,19 @@ def test_runner_records_raw_and_normalized_output_and_continues(tmp_path) -> Non
     model = FakeModel(
         [
             GenerationResult(
-                raw_output="  ```lean\nby\n  exact h\n```  ",
+                raw_output="<think>reasoning</think>\n\n  ```lean\nby\n  exact h\n```  ",
+                proof_output="  ```lean\nby\n  exact h\n```  ",
+                reasoning_output="reasoning",
                 latency_ms=11,
                 prompt_tokens=20,
                 completion_tokens=5,
             ),
-            GenerationResult(raw_output="not a proof", latency_ms=12),
+            GenerationResult(
+                raw_output="not a proof",
+                proof_output="not a proof",
+                reasoning_output=None,
+                latency_ms=12,
+            ),
             RuntimeError("provider unavailable"),
         ]
     )
@@ -79,15 +86,23 @@ def test_runner_records_raw_and_normalized_output_and_continues(tmp_path) -> Non
     assert len(verifier.calls) == 2
     assert summary.solved == 1
     assert summary.total == 3
-    assert records[0]["raw_model_output"] == "  ```lean\nby\n  exact h\n```  "
+    assert records[0]["raw_model_output"].startswith("<think>reasoning</think>")
+    assert records[0]["reasoning_output"] == "reasoning"
+    assert records[0]["proof_output"] == "  ```lean\nby\n  exact h\n```  "
     assert records[0]["normalized_proof"] == "by\n  exact h"
+    assert records[0]["verification_status"] == "verified"
     assert records[0]["verified"] is True
+    assert records[0]["has_sorry"] is False
     assert records[0]["prompt_tokens"] == 20
     assert records[0]["completion_tokens"] == 5
     assert records[1]["raw_model_output"] == "not a proof"
     assert records[1]["normalized_proof"] == "not a proof"
+    assert records[1]["verification_status"] == "rejected"
     assert records[1]["verified"] is False
     assert records[2]["raw_model_output"] == ""
+    assert records[2]["proof_output"] == ""
+    assert records[2]["reasoning_output"] is None
+    assert records[2]["verification_status"] is None
     assert records[2]["error"].startswith("generation_error: RuntimeError")
     assert progress_messages[0] == "[1/3] valid | generating..."
     assert progress_messages[1] == "[1/3] valid | generated   | 11 ms"
@@ -117,6 +132,33 @@ def test_cli_default_artifact_directory_is_results() -> None:
     assert DEFAULT_RESULTS_DIRECTORY == PROJECT_ROOT / "results"
 
 
+def test_incomplete_proof_is_serialized_but_not_counted_as_solved(tmp_path) -> None:
+    model = FakeModel(
+        [
+            GenerationResult(
+                raw_output="by\n  sorry",
+                proof_output="by\n  sorry",
+                reasoning_output=None,
+                latency_ms=4,
+            )
+        ]
+    )
+    output_path = tmp_path / "incomplete.jsonl"
+
+    summary = run_one_shot(
+        [TheoremTask("incomplete", "example : False")],
+        model,
+        IncompleteVerifier(),
+        output_path,
+    )
+    record = json.loads(output_path.read_text(encoding="utf-8"))
+
+    assert summary.solved == 0
+    assert record["verification_status"] == "incomplete"
+    assert record["verified"] is False
+    assert record["has_sorry"] is True
+
+
 def test_runner_continues_after_verifier_exception(tmp_path) -> None:
     tasks = [
         TheoremTask("verifier-error", "example : True"),
@@ -124,8 +166,8 @@ def test_runner_continues_after_verifier_exception(tmp_path) -> None:
     ]
     model = FakeModel(
         [
-            GenerationResult("by trivial", 1),
-            GenerationResult("by trivial", 1),
+            GenerationResult("by trivial", "by trivial", None, 1),
+            GenerationResult("by trivial", "by trivial", None, 1),
         ]
     )
     verifier = RaisingOnceVerifier()
@@ -165,7 +207,7 @@ class FakeVerifier:
         self.calls.append((statement, proof))
         success = proof == "by\n  exact h"
         return LeanResult(
-            success=success,
+            status=(VerificationStatus.VERIFIED if success else VerificationStatus.REJECTED),
             stdout="" if success else "Lean rejected proof",
             stderr="",
             elapsed_ms=7,
@@ -180,4 +222,21 @@ class RaisingOnceVerifier:
         self.calls.append((statement, proof))
         if len(self.calls) == 1:
             raise RuntimeError("Lean process failed to start")
-        return LeanResult(success=True, stdout="", stderr="", elapsed_ms=3)
+        return LeanResult(
+            status=VerificationStatus.VERIFIED,
+            stdout="",
+            stderr="",
+            elapsed_ms=3,
+        )
+
+
+class IncompleteVerifier:
+    def verify(self, statement: str, proof: str) -> LeanResult:
+        assert statement == "example : False"
+        assert proof == "by\n  sorry"
+        return LeanResult(
+            status=VerificationStatus.INCOMPLETE,
+            stdout='{"kind":"hasSorry","severity":"warning"}\n',
+            stderr="",
+            elapsed_ms=2,
+        )
