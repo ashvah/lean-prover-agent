@@ -6,10 +6,24 @@ from unittest.mock import patch
 
 import pytest
 
-from leanproof.model import GenerationResult
-from leanproof.one_shot import DatasetError, TheoremTask, load_dataset, run_one_shot
+from leanproof.model import GenerationResult, LLMConfig
+from leanproof.model_registry import ModelRegistry
+from leanproof.one_shot import (
+    DatasetError,
+    TheoremTask,
+    default_output_path,
+    load_dataset,
+    run_one_shot,
+)
 from leanproof.verifier import LeanResult, VerificationStatus
-from scripts.run_one_shot import DEFAULT_RESULTS_DIRECTORY, _print_progress, build_argument_parser
+from scripts.run_one_shot import (
+    DEFAULT_RESULTS_DIRECTORY,
+    _print_progress,
+    build_argument_parser,
+)
+from scripts.run_one_shot import (
+    main as run_cli,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -76,6 +90,7 @@ def test_runner_records_raw_and_normalized_output_and_continues(tmp_path) -> Non
         model,
         verifier,
         output_path,
+        model_alias="mock",
         progress_callback=progress_messages.append,
     )
     physical_lines = output_path.read_text(encoding="utf-8").splitlines()
@@ -86,6 +101,8 @@ def test_runner_records_raw_and_normalized_output_and_continues(tmp_path) -> Non
     assert len(verifier.calls) == 2
     assert summary.solved == 1
     assert summary.total == 3
+    assert all(record["model_alias"] == "mock" for record in records)
+    assert all(record["model"] == "mock-model" for record in records)
     assert records[0]["raw_model_output"].startswith("<think>reasoning</think>")
     assert records[0]["reasoning_output"] == "reasoning"
     assert records[0]["proof_output"] == "  ```lean\nby\n  exact h\n```  "
@@ -132,6 +149,44 @@ def test_cli_default_artifact_directory_is_results() -> None:
     assert DEFAULT_RESULTS_DIRECTORY == PROJECT_ROOT / "results"
 
 
+def test_default_output_filename_includes_model_alias(tmp_path) -> None:
+    output_path = default_output_path("data/smoke.jsonl", "minimax", tmp_path)
+
+    assert output_path.parent == tmp_path
+    assert output_path.name.startswith("one_shot_smoke_minimax_")
+    assert output_path.suffix == ".jsonl"
+
+
+def test_list_models_does_not_require_dataset_or_model(capsys) -> None:
+    registry = ModelRegistry(
+        {
+            "qwen": LLMConfig("qwen-key", "https://api.example.com/v1", "qwen-model"),
+            "minimax": LLMConfig("minimax-key", "https://api.example.com/v1", "minimax-model"),
+        }
+    )
+
+    with patch("scripts.run_one_shot.ModelRegistry.from_env", return_value=registry):
+        exit_code = run_cli(["--list-models"])
+
+    assert exit_code == 0
+    assert capsys.readouterr().out == "Registered models:\n- minimax\n- qwen\n"
+
+
+@pytest.mark.parametrize(
+    ("arguments", "missing_option"),
+    [
+        (["--dataset", "data/smoke.jsonl"], "--model"),
+        (["--model", "minimax"], "--dataset"),
+    ],
+)
+def test_normal_execution_requires_dataset_and_model(arguments, missing_option, capsys) -> None:
+    with pytest.raises(SystemExit) as captured:
+        run_cli(arguments)
+
+    assert captured.value.code == 2
+    assert missing_option in capsys.readouterr().err
+
+
 def test_incomplete_proof_is_serialized_but_not_counted_as_solved(tmp_path) -> None:
     model = FakeModel(
         [
@@ -150,6 +205,7 @@ def test_incomplete_proof_is_serialized_but_not_counted_as_solved(tmp_path) -> N
         model,
         IncompleteVerifier(),
         output_path,
+        model_alias="mock",
     )
     record = json.loads(output_path.read_text(encoding="utf-8"))
 
@@ -173,7 +229,7 @@ def test_runner_continues_after_verifier_exception(tmp_path) -> None:
     verifier = RaisingOnceVerifier()
     output_path = tmp_path / "verifier_error.jsonl"
 
-    summary = run_one_shot(tasks, model, verifier, output_path)
+    summary = run_one_shot(tasks, model, verifier, output_path, model_alias="mock")
     records = [json.loads(line) for line in output_path.read_text(encoding="utf-8").splitlines()]
 
     assert len(model.calls) == 2

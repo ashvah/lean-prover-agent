@@ -20,6 +20,7 @@ class ResultViewerError(ValueError):
 class ResultSummary:
     """Aggregate values displayed at the top of the result viewer."""
 
+    model_alias: str | None
     model: str
     total: int
     solved: int
@@ -78,6 +79,10 @@ def calculate_summary(records: Sequence[dict[str, object]]) -> ResultSummary:
     if not records:
         raise ResultViewerError("Cannot summarize an empty result set")
 
+    model_aliases = sorted(
+        {_text(record.get("model_alias")) for record in records if _text(record.get("model_alias"))}
+    )
+    model_alias = ", ".join(model_aliases) if model_aliases else None
     models = sorted({_text(record.get("model")) or "unknown" for record in records})
     model = models[0] if len(models) == 1 else ", ".join(models)
     total = len(records)
@@ -92,6 +97,7 @@ def calculate_summary(records: Sequence[dict[str, object]]) -> ResultSummary:
         if prompt is not None and completion is not None
     ]
     return ResultSummary(
+        model_alias=model_alias,
         model=model,
         total=total,
         solved=solved,
@@ -117,9 +123,15 @@ def build_html(
 
     cards = "\n".join(_render_result_card(record) for record in records)
     token_chart = _render_token_chart(records)
+    model_alias_html = (
+        f"<div><span>Model alias</span><strong>{_escape(summary.model_alias)}</strong></div>"
+        if summary.model_alias is not None
+        else ""
+    )
     summary_html = f"""
 <section class="summary" aria-label="Experiment summary">
-  <div><span>Model</span><strong>{_escape(summary.model)}</strong></div>
+  {model_alias_html}
+  <div><span>Provider model</span><strong>{_escape(summary.model)}</strong></div>
   <div><span>Total</span><strong>{summary.total}</strong></div>
   <div><span>Solved</span><strong>{summary.solved}</strong></div>
   <div><span>Failed</span><strong>{summary.failed}</strong></div>
@@ -160,6 +172,11 @@ def build_lean_export(
         "/-",
         "LeanProof-Agent generated inspection file.",
         f"source JSONL: {_lean_comment_text(source_name)}",
+        *(
+            [f"model alias: {_lean_comment_text(summary.model_alias)}"]
+            if summary.model_alias is not None
+            else []
+        ),
         f"model: {_lean_comment_text(summary.model)}",
         f"total tasks: {summary.total}",
         f"verified tasks: {summary.solved}",

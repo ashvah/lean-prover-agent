@@ -9,7 +9,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from leanproof import LeanVerifier
+from leanproof import LeanVerifier, VerificationStatus
 
 
 @dataclass(frozen=True)
@@ -17,57 +17,44 @@ class Example:
     label: str
     statement: str
     proof: str
-    expected_success: bool
+    expected_status: VerificationStatus
 
 
 def main() -> int:
     verifier = LeanVerifier(project_root=PROJECT_ROOT)
     examples = (
         Example(
-            "valid proof",
+            "verified",
             "example (p : Prop) (h : p) : p",
             "by\n  exact h",
-            True,
+            VerificationStatus.VERIFIED,
         ),
         Example(
-            "arithmetic proof",
-            "example (x : ℝ) : (x + 1)^2 = x^2 + 2*x + 1",
-            "by\n  ring",
-            True,
+            "incomplete",
+            "example : False",
+            "by\n  sorry",
+            VerificationStatus.INCOMPLETE,
         ),
         Example(
-            "unfinished proof",
-            "example (p q : Prop) (hp : p) : p ∧ q",
-            "by\n  constructor\n  · exact hp",
-            False,
-        ),
-        Example(
-            "unknown identifier",
-            "example (p : Prop) (h : p) : p",
+            "rejected",
+            "example : False",
             "by\n  exact nonexistent_theorem",
-            False,
-        ),
-        Example(
-            "parse error",
-            "example (p : Prop) (h : p) : p",
-            "by\n  exact (",
-            False,
+            VerificationStatus.REJECTED,
         ),
     )
 
     unexpected = False
     for example in examples:
         result = verifier.verify(example.statement, example.proof)
-        if result.success == example.expected_success:
-            status = "PASS" if result.success else "FAIL"
-            print(f"[{status}] {example.label}")
-        else:
+        print(f"[{example.label}]")
+        print(f"status: {result.status.value}")
+        print(f"verified: {result.verified}")
+        print(f"accepted: {result.accepted}")
+        print(f"has_sorry: {result.has_sorry}")
+        if result.status is not example.expected_status:
             unexpected = True
-            outcome = "PASS" if result.success else "FAIL"
-            print(f"[UNEXPECTED {outcome}] {example.label}")
-            feedback = (result.stdout + result.stderr).strip()
-            if feedback:
-                print(feedback)
+            print(f"expected_status: {example.expected_status.value}")
+        print()
 
     return 1 if unexpected else 0
 

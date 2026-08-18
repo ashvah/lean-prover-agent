@@ -42,18 +42,12 @@ def test_baseline_prompt_is_fixed_and_contains_only_statement() -> None:
     assert "feedback" not in prompt.lower()
 
 
-def test_config_loads_dotenv_without_overriding_environment(tmp_path, monkeypatch) -> None:
-    dotenv_path = tmp_path / ".env"
-    dotenv_path.write_text(
-        "LLM_API_KEY=file-key\nLLM_BASE_URL=https://file.example.com/v1/\nLLM_MODEL=file-model\n",
-        encoding="utf-8",
+def test_config_validates_and_normalizes_direct_values() -> None:
+    config = LLMConfig(
+        api_key=" environment-key ",
+        base_url=" https://file.example.com/v1/ ",
+        model=" file-model ",
     )
-    monkeypatch.setenv("LLM_API_KEY", "environment-key")
-    monkeypatch.delenv("LLM_BASE_URL", raising=False)
-    monkeypatch.delenv("LLM_MODEL", raising=False)
-    monkeypatch.delenv("LLM_REASONING_SPLIT", raising=False)
-
-    config = LLMConfig.from_env(dotenv_path)
 
     assert config.api_key == "environment-key"
     assert config.base_url == "https://file.example.com/v1"
@@ -61,21 +55,14 @@ def test_config_loads_dotenv_without_overriding_environment(tmp_path, monkeypatc
     assert config.reasoning_split is False
 
 
-def test_config_fails_fast_when_required_value_is_missing(tmp_path, monkeypatch) -> None:
-    for name in ("LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL"):
-        monkeypatch.delenv(name, raising=False)
-
-    with pytest.raises(ConfigurationError, match="LLM_API_KEY"):
-        LLMConfig.from_env(tmp_path / "missing.env")
+def test_config_fails_fast_when_required_value_is_missing() -> None:
+    with pytest.raises(ConfigurationError, match="api_key"):
+        LLMConfig("", "https://api.example.com/v1", "test-model")
 
 
-def test_config_rejects_invalid_base_url(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("LLM_API_KEY", "test-key")
-    monkeypatch.setenv("LLM_BASE_URL", "not-a-url")
-    monkeypatch.setenv("LLM_MODEL", "test-model")
-
-    with pytest.raises(ConfigurationError, match="LLM_BASE_URL"):
-        LLMConfig.from_env(tmp_path / "missing.env")
+def test_config_rejects_invalid_base_url() -> None:
+    with pytest.raises(ConfigurationError, match="base_url"):
+        LLMConfig("test-key", "not-a-url", "test-model")
 
 
 def test_model_makes_one_request_and_preserves_raw_output() -> None:
@@ -100,13 +87,13 @@ def test_model_makes_one_request_and_preserves_raw_output() -> None:
     }
 
 
-def test_reasoning_split_configuration_is_explicit(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("LLM_API_KEY", "test-key")
-    monkeypatch.setenv("LLM_BASE_URL", "https://api.example.com/v1")
-    monkeypatch.setenv("LLM_MODEL", "test-model")
-    monkeypatch.setenv("LLM_REASONING_SPLIT", "true")
-
-    config = LLMConfig.from_env(tmp_path / "missing.env")
+def test_reasoning_split_configuration_is_explicit() -> None:
+    config = LLMConfig(
+        "test-key",
+        "https://api.example.com/v1",
+        "test-model",
+        reasoning_split=True,
+    )
     completions = FakeCompletions("by\n  trivial")
     client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
     OpenAICompatibleProofModel(config, client=client).generate_proof("example : True")

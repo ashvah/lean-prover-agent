@@ -29,8 +29,8 @@ line-ending = "auto"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "-q"
-cache_dir = ".cache/pytest"
+addopts = "-q --basetemp=.cache/pytest-tmp"
+cache_dir = ".cache/pytest-cache"
 
 [tool.setuptools.packages.find]
 include = ["leanproof*"]

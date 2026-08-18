@@ -38,8 +38,7 @@ class ModelRegistry:
         for alias in aliases:
             prefix = alias.upper()
             values = {
-                suffix: os.getenv(f"{prefix}_{suffix}", "").strip()
-                for suffix in _REQUIRED_SUFFIXES
+                suffix: os.getenv(f"{prefix}_{suffix}", "").strip() for suffix in _REQUIRED_SUFFIXES
             }
             if not any(values.values()):
                 continue
@@ -54,7 +53,9 @@ class ModelRegistry:
                 api_key=values["API_KEY"],
                 base_url=values["BASE_URL"],
                 model=values["MODEL"],
-                reasoning_split=_parse_boolean(os.getenv(reasoning_variable, ""), reasoning_variable),
+                reasoning_split=_parse_boolean(
+                    os.getenv(reasoning_variable, ""), reasoning_variable
+                ),
             )
         return cls(configurations)
 

@@ -61,6 +61,7 @@ def test_explicit_output_paths_are_supported(tmp_path: Path) -> None:
 def test_calculate_summary_uses_stored_millisecond_latencies() -> None:
     summary = calculate_summary(sample_records()[:2])
 
+    assert summary.model_alias == "mock"
     assert summary.model == "mock-model"
     assert summary.total == 2
     assert summary.solved == 1
@@ -106,6 +107,8 @@ def test_html_renders_passed_failed_details_and_filters() -> None:
     assert 'data-status="failed"' in document
     assert ">PASS<" in document
     assert ">FAIL<" in document
+    assert "Model alias</span><strong>mock" in document
+    assert "Provider model</span><strong>mock-model" in document
     assert "Verifier status:" in document
     assert "VERIFIED" in document
     assert "INCOMPLETE" in document
@@ -197,6 +200,8 @@ def test_legacy_status_is_not_guessed_from_failed_proof_text() -> None:
         "legacy.jsonl",
     )
 
+    assert "Model alias" not in document
+    assert "Provider model" in document
     assert "UNKNOWN / LEGACY" in document
     assert "VERIFIED (LEGACY)" in document
     assert "Proof output</h3>\n  <pre><code>by\n  sorry</code></pre>" in document
@@ -252,6 +257,7 @@ def test_lean_header_contains_only_safe_metadata(tmp_path: Path) -> None:
     header = document.split("theorem_id:", maxsplit=1)[0]
 
     assert "source JSONL: safe.jsonl" in header
+    assert "model alias: mock" in header
     assert "model: mock- /model" in header
     assert "total tasks: 4" in header
     assert "verified tasks: 1" in header
@@ -275,6 +281,7 @@ def sample_records() -> list[dict[str, object]]:
         {
             "theorem_id": "passed_theorem",
             "statement": "example : True",
+            "model_alias": "mock",
             "model": "mock-model",
             "raw_model_output": "```lean\nby\n  trivial\n```",
             "reasoning_output": "A direct proof closes True.",
@@ -295,6 +302,7 @@ def sample_records() -> list[dict[str, object]]:
         {
             "theorem_id": "failed_theorem",
             "statement": "example : False",
+            "model_alias": "mock",
             "model": "mock-model",
             "raw_model_output": "by\n  exact nonexistent_theorem",
             "reasoning_output": None,
@@ -315,6 +323,7 @@ def sample_records() -> list[dict[str, object]]:
         {
             "theorem_id": "api_error",
             "statement": "example : 1 = 1",
+            "model_alias": "mock",
             "model": "mock-model",
             "raw_model_output": "",
             "reasoning_output": None,
@@ -335,6 +344,7 @@ def sample_records() -> list[dict[str, object]]:
         {
             "theorem_id": "incomplete_theorem",
             "statement": "example : False",
+            "model_alias": "mock",
             "model": "mock-model",
             "raw_model_output": "<think>Use a placeholder.</think>\n\nby\n  sorry",
             "reasoning_output": "Use a placeholder.",
