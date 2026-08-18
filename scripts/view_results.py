@@ -1,4 +1,4 @@
-"""Generate a self-contained HTML viewer for a one-shot JSONL result file."""
+"""Generate read-only HTML and Lean artifacts from a one-shot JSONL result file."""
 
 from __future__ import annotations
 
@@ -28,6 +28,14 @@ class ResultSummary:
     average_generation_latency_ms: float
     average_verification_latency_ms: float
     average_total_latency_ms: float
+
+
+@dataclass(frozen=True)
+class GeneratedArtifacts:
+    """Paths written from one immutable JSONL experiment result."""
+
+    html_path: Path
+    lean_path: Path
 
 
 def load_results(result_path: str | Path) -> list[dict[str, object]]:
@@ -109,37 +117,99 @@ def build_html(
     )
 
 
-def write_result_viewer(result_path: str | Path, output_path: str | Path | None = None) -> Path:
-    """Read a JSONL result and write a sibling HTML file, leaving JSONL unchanged."""
+def build_lean_export(
+    records: Sequence[dict[str, object]], summary: ResultSummary, source_name: str
+) -> str:
+    """Render stored statements and normalized proofs for manual Lean inspection."""
+
+    sections = [
+        "import Mathlib",
+        "",
+        "/-",
+        "LeanProof-Agent generated inspection file.",
+        f"source JSONL: {_lean_comment_text(source_name)}",
+        f"model: {_lean_comment_text(summary.model)}",
+        f"total tasks: {summary.total}",
+        f"verified tasks: {summary.solved}",
+        f"failed tasks: {summary.failed}",
+        "Failed model-generated proofs are intentionally preserved.",
+        "-/",
+        "",
+    ]
+    for record in records:
+        sections.extend(_render_lean_record(record))
+    return "\n".join(sections)
+
+
+def default_artifact_paths(result_path: str | Path) -> GeneratedArtifacts:
+    """Place reports and exports beside the conventional results directory."""
 
     source_path = Path(result_path)
-    destination = Path(output_path) if output_path is not None else source_path.with_suffix(".html")
-    if source_path.resolve() == destination.resolve():
-        raise ResultViewerError("HTML output path must differ from the JSONL source path")
+    artifact_root = (
+        source_path.parent.parent if source_path.parent.name == "results" else source_path.parent
+    )
+    return GeneratedArtifacts(
+        html_path=artifact_root / "reports" / f"{source_path.stem}.html",
+        lean_path=artifact_root / "exports" / f"{source_path.stem}.lean",
+    )
+
+
+def write_result_artifacts(
+    result_path: str | Path,
+    html_output_path: str | Path | None = None,
+    lean_output_path: str | Path | None = None,
+) -> GeneratedArtifacts:
+    """Transform one JSONL result into HTML and Lean files without changing the source."""
+
+    source_path = Path(result_path)
+    defaults = default_artifact_paths(source_path)
+    artifacts = GeneratedArtifacts(
+        html_path=Path(html_output_path) if html_output_path is not None else defaults.html_path,
+        lean_path=Path(lean_output_path) if lean_output_path is not None else defaults.lean_path,
+    )
+    resolved_paths = {
+        source_path.resolve(),
+        artifacts.html_path.resolve(),
+        artifacts.lean_path.resolve(),
+    }
+    if len(resolved_paths) != 3:
+        raise ResultViewerError("JSONL, HTML, and Lean paths must be distinct")
 
     records = load_results(source_path)
     summary = calculate_summary(records)
-    document = build_html(records, summary, source_path.name)
-    with destination.open("w", encoding="utf-8", newline="\n") as output:
-        output.write(document)
-    return destination
+    html_document = build_html(records, summary, source_path.name)
+    lean_document = build_lean_export(records, summary, source_path.name)
+    artifacts.html_path.parent.mkdir(parents=True, exist_ok=True)
+    artifacts.lean_path.parent.mkdir(parents=True, exist_ok=True)
+    with artifacts.html_path.open("w", encoding="utf-8", newline="\n") as output:
+        output.write(html_document)
+    with artifacts.lean_path.open("w", encoding="utf-8", newline="\n") as output:
+        output.write(lean_document)
+    return artifacts
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Create an offline HTML JSONL result viewer")
+    parser = argparse.ArgumentParser(description="Create offline HTML and Lean result artifacts")
     parser.add_argument("result", help="Path to an existing one-shot JSONL result file")
+    parser.add_argument("--html-output", help="Explicit HTML report path")
+    parser.add_argument("--lean-output", help="Explicit Lean inspection path")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_argument_parser().parse_args(argv)
     try:
-        output_path = write_result_viewer(args.result)
+        artifacts = write_result_artifacts(
+            args.result,
+            html_output_path=args.html_output,
+            lean_output_path=args.lean_output,
+        )
     except (OSError, ResultViewerError) as error:
         print(f"Error: {error}", file=sys.stderr)
         return 2
 
-    print(f"HTML viewer: {output_path.as_posix()}")
+    print(f"HTML report: {artifacts.html_path.as_posix()}")
+    print(f"Lean export: {artifacts.lean_path.as_posix()}")
     return 0
 
 
@@ -186,6 +256,36 @@ def _render_result_card(record: dict[str, object]) -> str:
 </article>""".strip()
 
 
+def _render_lean_record(record: dict[str, object]) -> list[str]:
+    status = "PASS" if record.get("verified") is True else "FAIL"
+    theorem_id = _lean_comment_text(record.get("theorem_id"))
+    statement = _text(record.get("statement"))
+    normalized_proof = _text(record.get("normalized_proof"))
+    error = _text(record.get("error"))
+    if error.startswith("generation_error:") and not normalized_proof:
+        return [
+            "/-",
+            f"theorem_id: {theorem_id}",
+            f"status: {status}",
+            "No normalized proof was produced because generation failed.",
+            "statement:",
+            _lean_comment_text(statement),
+            "error category:",
+            _lean_comment_text(_safe_error_category(error)),
+            "-/",
+            "",
+        ]
+    return [
+        "/-",
+        f"theorem_id: {theorem_id}",
+        f"status: {status}",
+        "-/",
+        "",
+        f"{statement} := {normalized_proof}",
+        "",
+    ]
+
+
 def _average_latency(records: Sequence[dict[str, object]], field: str) -> float:
     return sum(_numeric_value(record.get(field)) for record in records) / len(records)
 
@@ -206,6 +306,14 @@ def _text(value: object) -> str:
 
 def _escape(value: object) -> str:
     return html.escape(_text(value), quote=True)
+
+
+def _lean_comment_text(value: object) -> str:
+    return _text(value).replace("/-", "/ -").replace("-/", "- /")
+
+
+def _safe_error_category(error: str) -> str:
+    return ": ".join(part.strip() for part in error.split(":", maxsplit=2)[:2])
 
 
 _HTML_TEMPLATE = """<!doctype html>

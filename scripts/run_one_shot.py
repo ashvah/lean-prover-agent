@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_RESULTS_DIRECTORY = PROJECT_ROOT / "results"
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from leanproof.model import ConfigurationError, LLMConfig, OpenAICompatibleProofModel
@@ -29,7 +30,7 @@ def main(argv: list[str] | None = None) -> int:
     output_path = (
         Path(args.output)
         if args.output
-        else default_output_path(dataset_path, PROJECT_ROOT / "runs")
+        else default_output_path(dataset_path, DEFAULT_RESULTS_DIRECTORY)
     )
 
     try:

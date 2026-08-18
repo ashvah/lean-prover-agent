@@ -9,7 +9,7 @@ import pytest
 from leanproof.model import GenerationResult
 from leanproof.one_shot import DatasetError, TheoremTask, load_dataset, run_one_shot
 from leanproof.verifier import LeanResult
-from scripts.run_one_shot import _print_progress, build_argument_parser
+from scripts.run_one_shot import DEFAULT_RESULTS_DIRECTORY, _print_progress, build_argument_parser
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -111,6 +111,10 @@ def test_verbose_printer_flushes_immediately() -> None:
         _print_progress("progress")
 
     print_mock.assert_called_once_with("progress", flush=True)
+
+
+def test_cli_default_artifact_directory_is_results() -> None:
+    assert DEFAULT_RESULTS_DIRECTORY == PROJECT_ROOT / "results"
 
 
 def test_runner_continues_after_verifier_exception(tmp_path) -> None:
