@@ -1,1 +1,1 @@
-"""Command-line entry points for LeanProof-Agent."""
+"""Command-line entry points for Lean Prover Agent."""

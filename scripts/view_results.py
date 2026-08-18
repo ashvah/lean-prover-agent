@@ -148,7 +148,7 @@ def build_html(
   <div><span>Token usage available</span><strong>{summary.token_usage_available} / {summary.total} tasks</strong></div>
 </section>""".strip()
     replacements = {
-        "TITLE": _escape(f"LeanProof results — {source_name}"),
+        "TITLE": _escape(f"Lean Prover Agent results — {source_name}"),
         "SOURCE": _escape(source_name),
         "SUMMARY": summary_html,
         "TOKEN_CHART": token_chart,
@@ -170,7 +170,7 @@ def build_lean_export(
         "import Mathlib",
         "",
         "/-",
-        "LeanProof-Agent generated inspection file.",
+        "Lean Prover Agent generated inspection file.",
         f"source JSONL: {_lean_comment_text(source_name)}",
         *(
             [f"model alias: {_lean_comment_text(summary.model_alias)}"]
@@ -556,7 +556,7 @@ _HTML_TEMPLATE = """<!doctype html>
   </style>
 </head>
 <body>
-  <h1>LeanProof-Agent results</h1>
+  <h1>Lean Prover Agent results</h1>
   <p class="source">Source: __SOURCE__</p>
   __SUMMARY__
   __TOKEN_CHART__

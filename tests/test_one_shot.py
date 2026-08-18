@@ -30,7 +30,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 def test_smoke_dataset_has_25_unique_single_line_records() -> None:
     dataset_path = PROJECT_ROOT / "data" / "smoke.jsonl"
-    sanitation_source = (PROJECT_ROOT / "LeanproofAgent" / "SmokeDataset.lean").read_text(
+    sanitation_source = (PROJECT_ROOT / "LeanProverAgent" / "SmokeDataset.lean").read_text(
         encoding="utf-8"
     )
     physical_lines = dataset_path.read_text(encoding="utf-8").splitlines()

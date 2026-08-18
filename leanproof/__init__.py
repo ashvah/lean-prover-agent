@@ -1,4 +1,4 @@
-"""Python interface for LeanProof-Agent."""
+"""Python interface for Lean Prover Agent."""
 
 from leanproof.model import (
     GenerationResult,

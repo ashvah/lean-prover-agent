@@ -103,6 +103,7 @@ def test_html_renders_passed_failed_details_and_filters() -> None:
     records = sample_records()
     document = build_html(records, calculate_summary(records), "results.jsonl")
 
+    assert "Lean Prover Agent results" in document
     assert 'data-status="passed"' in document
     assert 'data-status="failed"' in document
     assert ">PASS<" in document
@@ -256,6 +257,7 @@ def test_lean_header_contains_only_safe_metadata(tmp_path: Path) -> None:
     document = artifacts.lean_path.read_text(encoding="utf-8")
     header = document.split("theorem_id:", maxsplit=1)[0]
 
+    assert "Lean Prover Agent generated inspection file." in header
     assert "source JSONL: safe.jsonl" in header
     assert "model alias: mock" in header
     assert "model: mock- /model" in header
