@@ -8,7 +8,6 @@ import pytest
 
 from leanproof import LeanVerifier
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -57,9 +56,7 @@ def test_arithmetic_proof(verifier: LeanVerifier) -> None:
     ],
     ids=["unfinished-proof", "unknown-identifier", "parse-error", "invalid-tactic"],
 )
-def test_invalid_proofs_fail(
-    verifier: LeanVerifier, statement: str, proof: str
-) -> None:
+def test_invalid_proofs_fail(verifier: LeanVerifier, statement: str, proof: str) -> None:
     result = verifier.verify(statement=statement, proof=proof)
 
     assert not result.success
@@ -67,15 +64,9 @@ def test_invalid_proofs_fail(
 
 
 def test_multiple_calls_are_isolated(verifier: LeanVerifier) -> None:
-    valid_before = verifier.verify(
-        "example (p : Prop) (h : p) : p", "by exact h"
-    )
-    invalid = verifier.verify(
-        "example (p : Prop) (h : p) : p", "by exact nonexistent_theorem"
-    )
-    valid_after = verifier.verify(
-        "example (p : Prop) (h : p) : p", "by exact h"
-    )
+    valid_before = verifier.verify("example (p : Prop) (h : p) : p", "by exact h")
+    invalid = verifier.verify("example (p : Prop) (h : p) : p", "by exact nonexistent_theorem")
+    valid_after = verifier.verify("example (p : Prop) (h : p) : p", "by exact h")
 
     assert valid_before.success
     assert not invalid.success

@@ -33,9 +33,7 @@ class LeanVerifier:
     ) -> None:
         self.project_root = Path(project_root or Path.cwd()).resolve()
         if not (self.project_root / "lakefile.toml").is_file():
-            raise ValueError(
-                f"project_root must contain lakefile.toml: {self.project_root}"
-            )
+            raise ValueError(f"project_root must contain lakefile.toml: {self.project_root}")
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be greater than zero")
 
@@ -70,8 +68,7 @@ class LeanVerifier:
                     success=False,
                     stdout=self._output_text(error.stdout),
                     stderr=(
-                        self._output_text(error.stderr)
-                        + f"Lean verification timed out after "
+                        self._output_text(error.stderr) + f"Lean verification timed out after "
                         f"{self.timeout_seconds:g} seconds."
                     ),
                     elapsed_ms=self._elapsed_ms(started),

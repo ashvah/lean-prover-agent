@@ -1,6 +1,7 @@
 /.lake/
 /.venv/
 /.pytest_cache/
+/.cache/
 /build/
 /*.egg-info/
 __pycache__/
