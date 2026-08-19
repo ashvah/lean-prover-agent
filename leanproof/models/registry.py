@@ -9,7 +9,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from leanproof.model import ConfigurationError, LLMConfig
+from leanproof.models.model import ConfigurationError, LLMConfig
 
 MODEL_ALIASES_VARIABLE = "LLM_MODEL_ALIASES"
 _ALIAS_PATTERN = re.compile(r"[a-z][a-z0-9_]*")

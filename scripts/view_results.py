@@ -196,13 +196,24 @@ def build_lean_export(
     return "\n".join(sections)
 
 
-def default_artifact_paths(result_path: str | Path) -> GeneratedArtifacts:
-    """Place reports and exports beside the conventional results directory."""
+def default_artifact_paths(
+    result_path: str | Path, *, strategy: str | None = None
+) -> GeneratedArtifacts:
+    """Place derived files in the matching strategy tree for conventional results."""
 
     source_path = Path(result_path)
-    artifact_root = (
-        source_path.parent.parent if source_path.parent.name == "results" else source_path.parent
-    )
+    if source_path.parent.name == "results" and strategy in {"one_shot", "retry"}:
+        parent_strategy_root = source_path.parent.parent
+        artifacts_root = (
+            parent_strategy_root.parent
+            if parent_strategy_root.parent.name == "artifacts"
+            else parent_strategy_root / "artifacts"
+        )
+        artifact_root = artifacts_root / strategy
+    else:
+        artifact_root = (
+            source_path.parent.parent if source_path.parent.name == "results" else source_path.parent
+        )
     return GeneratedArtifacts(
         html_path=artifact_root / "reports" / f"{source_path.stem}.html",
         lean_path=artifact_root / "exports" / f"{source_path.stem}.lean",
@@ -217,7 +228,9 @@ def write_result_artifacts(
     """Transform one JSONL result into HTML and Lean files without changing the source."""
 
     source_path = Path(result_path)
-    defaults = default_artifact_paths(source_path)
+    records = load_results(source_path)
+    summary = calculate_summary(records)
+    defaults = default_artifact_paths(source_path, strategy=summary.strategy)
     artifacts = GeneratedArtifacts(
         html_path=Path(html_output_path) if html_output_path is not None else defaults.html_path,
         lean_path=Path(lean_output_path) if lean_output_path is not None else defaults.lean_path,
@@ -230,8 +243,6 @@ def write_result_artifacts(
     if len(resolved_paths) != 3:
         raise ResultViewerError("JSONL, HTML, and Lean paths must be distinct")
 
-    records = load_results(source_path)
-    summary = calculate_summary(records)
     html_document = build_html(records, summary, source_path.name)
     lean_document = build_lean_export(records, summary, source_path.name)
     artifacts.html_path.parent.mkdir(parents=True, exist_ok=True)

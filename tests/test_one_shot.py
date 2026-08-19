@@ -6,19 +6,18 @@ from unittest.mock import patch
 
 import pytest
 
-from leanproof.model import GenerationResult, LLMConfig
-from leanproof.model_registry import ModelRegistry
-from leanproof.one_shot import (
+from leanproof.lean import LeanResult, VerificationStatus
+from leanproof.models import GenerationResult, LLMConfig, ModelRegistry
+from leanproof.strategies import (
     DatasetError,
     TheoremTask,
     default_output_path,
     load_dataset,
     run_one_shot,
 )
-from leanproof.verifier import LeanResult, VerificationStatus
+from scripts._common import print_progress
 from scripts.run_one_shot import (
     DEFAULT_RESULTS_DIRECTORY,
-    _print_progress,
     build_argument_parser,
 )
 from scripts.run_one_shot import (
@@ -140,13 +139,13 @@ def test_cli_accepts_verbose_aliases(verbose_flag: str) -> None:
 
 def test_verbose_printer_flushes_immediately() -> None:
     with patch("builtins.print") as print_mock:
-        _print_progress("progress")
+        print_progress("progress")
 
     print_mock.assert_called_once_with("progress", flush=True)
 
 
-def test_cli_default_artifact_directory_is_results() -> None:
-    assert DEFAULT_RESULTS_DIRECTORY == PROJECT_ROOT / "results"
+def test_cli_default_artifact_directory_is_strategy_results() -> None:
+    assert DEFAULT_RESULTS_DIRECTORY == PROJECT_ROOT / "artifacts" / "one_shot" / "results"
 
 
 def test_default_output_filename_includes_model_alias(tmp_path) -> None:

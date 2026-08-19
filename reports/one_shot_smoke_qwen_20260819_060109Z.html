@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lean Prover Agent results — one_shot_smoke_qwen_20260819_060109Z.jsonl</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+    body { max-width: 1100px; margin: 0 auto; padding: 2rem; background: #f5f7fa; color: #172033; }
+    h1 { margin-bottom: .25rem; }
+    .source { color: #596579; margin-top: 0; }
+    .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: .75rem; margin: 1.5rem 0; }
+    .summary div { display: grid; gap: .25rem; padding: .9rem; border: 1px solid #d8dee9; border-radius: .5rem; background: white; }
+    .summary span, dt { color: #667085; font-size: .82rem; }
+    .controls { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; margin: 1.5rem 0; }
+    .controls input { flex: 1 1 280px; padding: .65rem; border: 1px solid #aeb7c5; border-radius: .4rem; }
+    button { padding: .6rem .9rem; border: 1px solid #8792a2; border-radius: .4rem; background: white; color: inherit; cursor: pointer; }
+    button.active { background: #1f5eff; border-color: #1f5eff; color: white; }
+    .result-card { margin: 1rem 0; padding: 1.25rem; border: 1px solid #d8dee9; border-left-width: .4rem; border-radius: .55rem; background: white; }
+    .result-card.passed { border-left-color: #198754; }
+    .result-card.failed { border-left-color: #c9362b; }
+    .result-card header { display: flex; justify-content: space-between; gap: 1rem; align-items: center; }
+    .result-card h2 { margin: 0; font-size: 1.15rem; overflow-wrap: anywhere; }
+    .status { padding: .25rem .55rem; border-radius: 999px; color: white; font-weight: 700; }
+    .status.passed { background: #198754; }
+    .status.failed { background: #c9362b; }
+    .verification-status, .benchmark-result { margin: .5rem 0; }
+    .verifier-verified { color: #198754; }
+    .verifier-incomplete { color: #ad6500; }
+    .verifier-rejected, .verifier-timeout, .verifier-execution-error { color: #c9362b; }
+    .verifier-unknown { color: #667085; }
+    .latencies, .tokens, .retry-metadata { display: flex; flex-wrap: wrap; gap: 1.25rem; margin: .8rem 0; }
+    .latencies div, .tokens div, .retry-metadata div { display: flex; gap: .35rem; }
+    .latencies dd, .tokens dd, .retry-metadata dd { margin: 0; }
+    .retry-attempts { margin-top: 1rem; }
+    .retry-attempt { margin-top: 1rem; padding: 1rem; border: 1px solid #d8dee9; border-radius: .45rem; }
+    .retry-attempt h4 { margin-top: 0; }
+    .token-chart { margin: 1.5rem 0; padding: 1rem; border: 1px solid #d8dee9; border-radius: .5rem; background: white; }
+    .token-chart h2 { margin-top: 0; }
+    .token-legend { display: flex; gap: 1rem; font-size: .85rem; }
+    .token-legend span:first-child::before, .token-legend span:last-child::before { content: ""; display: inline-block; width: .75rem; height: .75rem; margin-right: .3rem; }
+    .token-legend span:first-child::before { background: #4f7cff; }
+    .token-legend span:last-child::before { background: #8b5cf6; }
+    .token-row { display: grid; grid-template-columns: minmax(120px, 1fr) 3fr auto; gap: .65rem; align-items: center; margin: .45rem 0; }
+    .token-theorem { overflow-wrap: anywhere; }
+    .token-bar { display: flex; height: .8rem; border-radius: 999px; overflow: hidden; background: #e5e7eb; }
+    .token-prompt { background: #4f7cff; }
+    .token-completion { background: #8b5cf6; }
+    .token-count, .token-unavailable { font-variant-numeric: tabular-nums; color: #667085; }
+    pre { overflow-x: auto; padding: .85rem; border-radius: .4rem; background: #111827; color: #e5e7eb; white-space: pre-wrap; overflow-wrap: anywhere; }
+    details { margin-top: .75rem; }
+    summary { cursor: pointer; font-weight: 650; }
+    [hidden] { display: none !important; }
+    @media (prefers-color-scheme: dark) {
+      body { background: #111827; color: #e5e7eb; }
+      .summary div, button, .result-card, .token-chart { background: #1f2937; border-color: #4b5563; }
+      .source, .summary span, dt { color: #aeb7c5; }
+    }
+  </style>
+</head>
+<body>
+  <h1>Lean Prover Agent results</h1>
+  <p class="source">Source: one_shot_smoke_qwen_20260819_060109Z.jsonl</p>
+  <section class="summary" aria-label="Experiment summary">
+  <div><span>Model alias</span><strong>qwen</strong></div>
+  <div><span>Provider model</span><strong>qwen</strong></div>
+  <div><span>Strategy</span><strong>one_shot</strong></div>
+  <div><span>Total</span><strong>5</strong></div>
+  <div><span>Solved</span><strong>5</strong></div>
+  <div><span>Failed</span><strong>0</strong></div>
+  <div><span>Solve rate</span><strong>100.0%</strong></div>
+  <div><span>Avg generation</span><strong>1320.4 ms</strong></div>
+  <div><span>Avg verification</span><strong>19522.8 ms</strong></div>
+  <div><span>Avg total</span><strong>20843.6 ms</strong></div>
+  <div><span>Total prompt tokens</span><strong>362</strong></div>
+  <div><span>Total completion tokens</span><strong>34</strong></div>
+  <div><span>Total tokens</span><strong>396</strong></div>
+  <div><span>Avg prompt tokens / available theorem</span><strong>72.4</strong></div>
+  <div><span>Avg completion tokens / available theorem</span><strong>6.8</strong></div>
+  <div><span>Avg total tokens / available theorem</span><strong>79.2</strong></div>
+  <div><span>Token usage available</span><strong>5 / 5 tasks</strong></div>
+</section>
+  <section class="token-chart" aria-label="Token usage by theorem"><h2>Token usage by theorem</h2><p class="token-legend"><span>Prompt</span><span>Completion</span></p><div class="token-row"><span class="token-theorem">smoke_exact_001</span><span class="token-bar" aria-hidden="true"><span class="token-prompt" style="width:80.682%"></span><span class="token-completion" style="width:4.545%"></span></span><span class="token-count">75</span></div><div class="token-row"><span class="token-theorem">smoke_exact_002</span><span class="token-bar" aria-hidden="true"><span class="token-prompt" style="width:82.955%"></span><span class="token-completion" style="width:3.409%"></span></span><span class="token-count">76</span></div><div class="token-row"><span class="token-theorem">smoke_intro_003</span><span class="token-bar" aria-hidden="true"><span class="token-prompt" style="width:77.273%"></span><span class="token-completion" style="width:7.955%"></span></span><span class="token-count">75</span></div><div class="token-row"><span class="token-theorem">smoke_intro_004</span><span class="token-bar" aria-hidden="true"><span class="token-prompt" style="width:80.682%"></span><span class="token-completion" style="width:12.500%"></span></span><span class="token-count">82</span></div><div class="token-row"><span class="token-theorem">smoke_constructor_005</span><span class="token-bar" aria-hidden="true"><span class="token-prompt" style="width:89.773%"></span><span class="token-completion" style="width:10.227%"></span></span><span class="token-count">88</span></div></section>
+  <section class="controls" aria-label="Result filters">
+    <button type="button" class="active" data-filter="all">All</button>
+    <button type="button" data-filter="passed">Passed</button>
+    <button type="button" data-filter="failed">Failed</button>
+    <input id="result-search" type="search" placeholder="Search theorem ID or statement" aria-label="Search results">
+    <span id="visible-count" aria-live="polite"></span>
+  </section>
+  <main id="results">
+    <article class="result-card passed" data-status="passed" data-search="smoke_exact_001 example (p : prop) (h : p) : p">
+  <header>
+    <h2>smoke_exact_001</h2>
+    <span class="status passed">PASS</span>
+  </header>
+  <p class="verification-status">Verifier status: <strong class="verifier-verified">VERIFIED</strong></p>
+  <p class="benchmark-result">Benchmark result: <strong>PASS</strong></p>
+  
+  <dl class="latencies">
+    <div><dt>Generation</dt><dd>1915.0 ms</dd></div>
+    <div><dt>Verification</dt><dd>19344.0 ms</dd></div>
+    <div><dt>Total</dt><dd>21259.0 ms</dd></div>
+  </dl>
+  <dl class="tokens">
+    <div><dt>Prompt tokens</dt><dd>71</dd></div>
+    <div><dt>Completion tokens</dt><dd>4</dd></div>
+    <div><dt>Total tokens</dt><dd>75</dd></div>
+  </dl>
+  <h3>Theorem statement</h3>
+  <pre><code>example (p : Prop) (h : p) : p</code></pre>
+  <h3>Proof output</h3>
+  <pre><code>by exact h</code></pre>
+  <h3>Normalized Lean proof</h3>
+  <pre><code>by exact h</code></pre>
+  
+  <details>
+    <summary>Raw model output</summary>
+    <pre><code>by exact h</code></pre>
+  </details>
+  <details>
+    <summary>Lean diagnostics</summary>
+    <h4>stdout</h4>
+    <pre><code></code></pre>
+    <h4>stderr</h4>
+    <pre><code></code></pre>
+    
+  </details>
+  
+</article>
+<article class="result-card passed" data-status="passed" data-search="smoke_exact_002 example (α : type) (x : α) : x = x">
+  <header>
+    <h2>smoke_exact_002</h2>
+    <span class="status passed">PASS</span>
+  </header>
+  <p class="verification-status">Verifier status: <strong class="verifier-verified">VERIFIED</strong></p>
+  <p class="benchmark-result">Benchmark result: <strong>PASS</strong></p>
+  
+  <dl class="latencies">
+    <div><dt>Generation</dt><dd>914.0 ms</dd></div>
+    <div><dt>Verification</dt><dd>19825.0 ms</dd></div>
+    <div><dt>Total</dt><dd>20740.0 ms</dd></div>
+  </dl>
+  <dl class="tokens">
+    <div><dt>Prompt tokens</dt><dd>73</dd></div>
+    <div><dt>Completion tokens</dt><dd>3</dd></div>
+    <div><dt>Total tokens</dt><dd>76</dd></div>
+  </dl>
+  <h3>Theorem statement</h3>
+  <pre><code>example (α : Type) (x : α) : x = x</code></pre>
+  <h3>Proof output</h3>
+  <pre><code>by rfl</code></pre>
+  <h3>Normalized Lean proof</h3>
+  <pre><code>by rfl</code></pre>
+  
+  <details>
+    <summary>Raw model output</summary>
+    <pre><code>by rfl</code></pre>
+  </details>
+  <details>
+    <summary>Lean diagnostics</summary>
+    <h4>stdout</h4>
+    <pre><code></code></pre>
+    <h4>stderr</h4>
+    <pre><code></code></pre>
+    
+  </details>
+  
+</article>
+<article class="result-card passed" data-status="passed" data-search="smoke_intro_003 example (p : prop) : p → p">
+  <header>
+    <h2>smoke_intro_003</h2>
+    <span class="status passed">PASS</span>
+  </header>
+  <p class="verification-status">Verifier status: <strong class="verifier-verified">VERIFIED</strong></p>
+  <p class="benchmark-result">Benchmark result: <strong>PASS</strong></p>
+  
+  <dl class="latencies">
+    <div><dt>Generation</dt><dd>965.0 ms</dd></div>
+    <div><dt>Verification</dt><dd>19499.0 ms</dd></div>
+    <div><dt>Total</dt><dd>20465.0 ms</dd></div>
+  </dl>
+  <dl class="tokens">
+    <div><dt>Prompt tokens</dt><dd>68</dd></div>
+    <div><dt>Completion tokens</dt><dd>7</dd></div>
+    <div><dt>Total tokens</dt><dd>75</dd></div>
+  </dl>
+  <h3>Theorem statement</h3>
+  <pre><code>example (p : Prop) : p → p</code></pre>
+  <h3>Proof output</h3>
+  <pre><code>by intro hp; exact hp</code></pre>
+  <h3>Normalized Lean proof</h3>
+  <pre><code>by intro hp; exact hp</code></pre>
+  
+  <details>
+    <summary>Raw model output</summary>
+    <pre><code>by intro hp; exact hp</code></pre>
+  </details>
+  <details>
+    <summary>Lean diagnostics</summary>
+    <h4>stdout</h4>
+    <pre><code></code></pre>
+    <h4>stderr</h4>
+    <pre><code></code></pre>
+    
+  </details>
+  
+</article>
+<article class="result-card passed" data-status="passed" data-search="smoke_intro_004 example (p q : prop) : p → q → p">
+  <header>
+    <h2>smoke_intro_004</h2>
+    <span class="status passed">PASS</span>
+  </header>
+  <p class="verification-status">Verifier status: <strong class="verifier-verified">VERIFIED</strong></p>
+  <p class="benchmark-result">Benchmark result: <strong>PASS</strong></p>
+  
+  <dl class="latencies">
+    <div><dt>Generation</dt><dd>1130.0 ms</dd></div>
+    <div><dt>Verification</dt><dd>19537.0 ms</dd></div>
+    <div><dt>Total</dt><dd>20667.0 ms</dd></div>
+  </dl>
+  <dl class="tokens">
+    <div><dt>Prompt tokens</dt><dd>71</dd></div>
+    <div><dt>Completion tokens</dt><dd>11</dd></div>
+    <div><dt>Total tokens</dt><dd>82</dd></div>
+  </dl>
+  <h3>Theorem statement</h3>
+  <pre><code>example (p q : Prop) : p → q → p</code></pre>
+  <h3>Proof output</h3>
+  <pre><code>by intro h1 h2; exact h1</code></pre>
+  <h3>Normalized Lean proof</h3>
+  <pre><code>by intro h1 h2; exact h1</code></pre>
+  
+  <details>
+    <summary>Raw model output</summary>
+    <pre><code>by intro h1 h2; exact h1</code></pre>
+  </details>
+  <details>
+    <summary>Lean diagnostics</summary>
+    <h4>stdout</h4>
+    <pre><code></code></pre>
+    <h4>stderr</h4>
+    <pre><code></code></pre>
+    
+  </details>
+  
+</article>
+<article class="result-card passed" data-status="passed" data-search="smoke_constructor_005 example (p q : prop) (hp : p) (hq : q) : p ∧ q">
+  <header>
+    <h2>smoke_constructor_005</h2>
+    <span class="status passed">PASS</span>
+  </header>
+  <p class="verification-status">Verifier status: <strong class="verifier-verified">VERIFIED</strong></p>
+  <p class="benchmark-result">Benchmark result: <strong>PASS</strong></p>
+  
+  <dl class="latencies">
+    <div><dt>Generation</dt><dd>1678.0 ms</dd></div>
+    <div><dt>Verification</dt><dd>19409.0 ms</dd></div>
+    <div><dt>Total</dt><dd>21087.0 ms</dd></div>
+  </dl>
+  <dl class="tokens">
+    <div><dt>Prompt tokens</dt><dd>79</dd></div>
+    <div><dt>Completion tokens</dt><dd>9</dd></div>
+    <div><dt>Total tokens</dt><dd>88</dd></div>
+  </dl>
+  <h3>Theorem statement</h3>
+  <pre><code>example (p q : Prop) (hp : p) (hq : q) : p ∧ q</code></pre>
+  <h3>Proof output</h3>
+  <pre><code>by exact ⟨hp, hq⟩</code></pre>
+  <h3>Normalized Lean proof</h3>
+  <pre><code>by exact ⟨hp, hq⟩</code></pre>
+  
+  <details>
+    <summary>Raw model output</summary>
+    <pre><code>by exact ⟨hp, hq⟩</code></pre>
+  </details>
+  <details>
+    <summary>Lean diagnostics</summary>
+    <h4>stdout</h4>
+    <pre><code></code></pre>
+    <h4>stderr</h4>
+    <pre><code></code></pre>
+    
+  </details>
+  
+</article>
+  </main>
+  <script>
+    const cards = Array.from(document.querySelectorAll(".result-card"));
+    const buttons = Array.from(document.querySelectorAll("[data-filter]"));
+    const search = document.getElementById("result-search");
+    const visibleCount = document.getElementById("visible-count");
+    let activeFilter = "all";
+
+    function applyFilters() {
+      const query = search.value.trim().toLocaleLowerCase();
+      let visible = 0;
+      for (const card of cards) {
+        const statusMatches = activeFilter === "all" || card.dataset.status === activeFilter;
+        const searchMatches = !query || card.dataset.search.includes(query);
+        card.hidden = !(statusMatches && searchMatches);
+        if (!card.hidden) visible += 1;
+      }
+      visibleCount.textContent = `${visible} of ${cards.length}`;
+    }
+
+    for (const button of buttons) {
+      button.addEventListener("click", () => {
+        activeFilter = button.dataset.filter;
+        for (const candidate of buttons) candidate.classList.toggle("active", candidate === button);
+        applyFilters();
+      });
+    }
+    search.addEventListener("input", applyFilters);
+    applyFilters();
+  </script>
+</body>
+</html>

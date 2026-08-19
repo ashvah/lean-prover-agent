@@ -13,7 +13,7 @@ from scripts.view_results import (
 )
 
 
-def test_default_paths_create_report_and_export_directories_without_changing_source(
+def test_legacy_results_path_uses_strategy_tree_without_changing_source(
     tmp_path: Path,
 ) -> None:
     result_path = tmp_path / "results" / "example.jsonl"
@@ -26,8 +26,8 @@ def test_default_paths_create_report_and_export_directories_without_changing_sou
 
     assert loaded == records
     assert result_path.read_bytes() == original_bytes
-    assert artifacts.html_path == tmp_path / "reports" / "example.html"
-    assert artifacts.lean_path == tmp_path / "exports" / "example.lean"
+    assert artifacts.html_path == tmp_path / "artifacts" / "one_shot" / "reports" / "example.html"
+    assert artifacts.lean_path == tmp_path / "artifacts" / "one_shot" / "exports" / "example.lean"
     assert artifacts.html_path.is_file()
     assert artifacts.lean_path.is_file()
 
@@ -56,6 +56,32 @@ def test_explicit_output_paths_are_supported(tmp_path: Path) -> None:
     assert artifacts.lean_path == lean_path
     assert html_path.is_file()
     assert lean_path.is_file()
+
+
+def test_retry_results_path_uses_matching_strategy_artifact_tree(tmp_path: Path) -> None:
+    result_path = write_jsonl(
+        tmp_path / "artifacts" / "retry" / "results" / "example.jsonl",
+        [sample_retry_record()],
+    )
+
+    artifacts = write_result_artifacts(result_path)
+
+    assert artifacts.html_path == tmp_path / "artifacts" / "retry" / "reports" / "example.html"
+    assert artifacts.lean_path == tmp_path / "artifacts" / "retry" / "exports" / "example.lean"
+
+
+def test_result_metadata_selects_strategy_tree_instead_of_source_folder_name(
+    tmp_path: Path,
+) -> None:
+    result_path = write_jsonl(
+        tmp_path / "artifacts" / "one_shot" / "results" / "retry-record.jsonl",
+        [sample_retry_record()],
+    )
+
+    artifacts = write_result_artifacts(result_path)
+
+    assert artifacts.html_path.parent == tmp_path / "artifacts" / "retry" / "reports"
+    assert artifacts.lean_path.parent == tmp_path / "artifacts" / "retry" / "exports"
 
 
 def test_calculate_summary_uses_stored_millisecond_latencies() -> None:

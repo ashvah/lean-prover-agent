@@ -10,9 +10,9 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from leanproof.model import GenerationResult, ProofModel, normalize_proof
-from leanproof.one_shot import ProgressCallback, ProofVerifier, TheoremTask
-from leanproof.verifier import VerificationStatus
+from leanproof.lean import VerificationStatus
+from leanproof.models import GenerationResult, ProofModel, normalize_proof
+from leanproof.strategies.one_shot import ProgressCallback, ProofVerifier, TheoremTask
 
 DEFAULT_MAX_ATTEMPTS = 4
 RETRY_STRATEGY = "retry"

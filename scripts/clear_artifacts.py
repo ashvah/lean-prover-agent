@@ -6,23 +6,35 @@ import shutil
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
-ARTIFACT_DIRECTORIES = (
-    PROJECT_ROOT / "results",
-    PROJECT_ROOT / "exports",
-    PROJECT_ROOT / "reports",
-)
+ARTIFACT_ROOT = PROJECT_ROOT / "artifacts"
+STRATEGIES = ("one_shot", "retry")
+ARTIFACT_KINDS = ("results", "reports", "exports")
 
 
-def clear_directory(directory: Path) -> int:
-    """Remove all files and subdirectories inside one artifact directory."""
+def _artifact_directories() -> tuple[Path, ...]:
+    return tuple(
+        ARTIFACT_ROOT / strategy / artifact_kind
+        for strategy in STRATEGIES
+        for artifact_kind in ARTIFACT_KINDS
+    )
 
-    if not directory.exists():
-        return 0
 
+def _clear_directory(directory: Path) -> int:
+    """Clear one fixed artifact directory after validating its resolved location."""
+
+    artifact_root = ARTIFACT_ROOT.resolve()
+    resolved_directory = directory.resolve()
+    allowed_directories = {path.resolve() for path in _artifact_directories()}
+    if resolved_directory not in allowed_directories or not resolved_directory.is_relative_to(
+        artifact_root
+    ):
+        raise ValueError(f"Refusing to clear non-artifact directory: {directory}")
+
+    directory.mkdir(parents=True, exist_ok=True)
     removed = 0
-
     for path in directory.iterdir():
+        if not path.resolve().is_relative_to(artifact_root):
+            raise ValueError(f"Refusing to clear path outside artifact root: {path}")
         if path.is_dir():
             shutil.rmtree(path)
         else:
@@ -35,8 +47,8 @@ def clear_directory(directory: Path) -> int:
 def main() -> int:
     total_removed = 0
 
-    for directory in ARTIFACT_DIRECTORIES:
-        removed = clear_directory(directory)
+    for directory in _artifact_directories():
+        removed = _clear_directory(directory)
         total_removed += removed
         print(f"{directory.relative_to(PROJECT_ROOT)}: removed {removed} item(s)")
 

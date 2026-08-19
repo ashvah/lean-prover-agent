@@ -3,11 +3,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from leanproof.model import GenerationResult
-from leanproof.one_shot import TheoremTask
-from leanproof.retry import DEFAULT_MAX_ATTEMPTS, default_retry_output_path, run_retry
-from leanproof.verifier import LeanResult, VerificationStatus
-from scripts.run_retry import build_argument_parser
+from leanproof.lean import LeanResult, VerificationStatus
+from leanproof.models import GenerationResult
+from leanproof.strategies import (
+    DEFAULT_MAX_ATTEMPTS,
+    TheoremTask,
+    default_retry_output_path,
+    run_retry,
+)
+from scripts.run_retry import DEFAULT_RESULTS_DIRECTORY, PROJECT_ROOT, build_argument_parser
 
 
 def test_first_attempt_verified_stops_after_one_generation(tmp_path: Path) -> None:
@@ -179,6 +183,7 @@ def test_default_path_and_cli_default_identify_retry_budget(tmp_path: Path) -> N
     assert path.name.startswith("retry_smoke_minimax_k4_")
     assert path.suffix == ".jsonl"
     assert args.max_attempts == DEFAULT_MAX_ATTEMPTS
+    assert DEFAULT_RESULTS_DIRECTORY == PROJECT_ROOT / "artifacts" / "retry" / "results"
 
 
 class FakeModel:

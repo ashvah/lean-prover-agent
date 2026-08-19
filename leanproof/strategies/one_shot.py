@@ -11,8 +11,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
-from leanproof.model import GenerationResult, ProofModel, normalize_proof
-from leanproof.verifier import LeanResult, VerificationStatus
+from leanproof.lean import LeanResult, VerificationStatus
+from leanproof.models import GenerationResult, ProofModel, normalize_proof
 
 
 class DatasetError(ValueError):

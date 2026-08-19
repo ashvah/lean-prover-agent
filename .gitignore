@@ -3,9 +3,7 @@
 /.env
 /.pytest_cache/
 /.cache/
-/results/
-/reports/
-/exports/
+/artifacts/
 /build/
 /*.egg-info/
 __pycache__/

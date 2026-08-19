@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from leanproof.model import (
+from leanproof.models import (
     BASELINE_PROMPT_TEMPLATE,
     ConfigurationError,
     LLMConfig,

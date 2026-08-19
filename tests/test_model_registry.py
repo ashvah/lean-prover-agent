@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from leanproof.model import ConfigurationError, LLMConfig
-from leanproof.model_registry import ModelRegistry
+from leanproof.models import ConfigurationError, LLMConfig, ModelRegistry
 
 
 def test_multiple_complete_configurations_are_registered_and_sorted(tmp_path, monkeypatch) -> None:
