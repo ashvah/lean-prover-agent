@@ -54,12 +54,12 @@ source_file = "0000.jsonl"
 [run_one_shot]
 dataset = "data/smoke.jsonl"
 model = "minimax"
-limit = 0
+max_transport_retries = 2
 verbose = true
 
 [run_retry]
 dataset = "data/splits/development/0000_medium_50_seed42.jsonl"
 model = "minimax"
 max_attempts = 4
-limit = 0
+max_transport_retries = 2
 verbose = true

@@ -3,11 +3,14 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import httpx2
 import pytest
+from openai import APIConnectionError
 
 from leanproof.models.model import (
     BASELINE_PROMPT_TEMPLATE,
     ConfigurationError,
+    GenerationRequestError,
     LLMConfig,
     OpenAICompatibleProofModel,
     ProofGenerationError,
@@ -237,6 +240,30 @@ def test_model_rejects_completion_without_text() -> None:
         OpenAICompatibleProofModel(config, client=client).generate_proof("example : True")
 
 
+def test_model_wraps_transport_failure_with_low_level_cause() -> None:
+    request = httpx2.Request("POST", "https://api.example.com/v1/chat/completions")
+    try:
+        raise httpx2.ConnectTimeout("connection timed out", request=request)
+    except httpx2.ConnectTimeout as cause:
+        try:
+            raise APIConnectionError(request=request) from cause
+        except APIConnectionError as error:
+            provider_error = error
+    completions = RaisingCompletions(provider_error)
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    config = LLMConfig("secret-key", "https://api.example.com/v1", "test-model")
+
+    with pytest.raises(GenerationRequestError) as captured:
+        OpenAICompatibleProofModel(config, client=client).generate_proof("example : True")
+
+    assert captured.value.transport is True
+    assert captured.value.retryable is True
+    assert captured.value.details.stage == "generation_request"
+    assert captured.value.details.type == "APIConnectionError"
+    assert captured.value.details.cause_type == "ConnectTimeout"
+    assert "secret-key" not in captured.value.details.message
+
+
 class FakeCompletions:
     def __init__(self, raw_output: str, *, reasoning_details=None) -> None:
         self.raw_output = raw_output
@@ -256,3 +283,11 @@ class FakeCompletions:
             ],
             usage=SimpleNamespace(prompt_tokens=31, completion_tokens=7),
         )
+
+
+class RaisingCompletions:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    def create(self, **kwargs):
+        raise self.error

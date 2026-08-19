@@ -23,6 +23,7 @@ DEFAULT_RETRY_DATASET_PATH = "data/smoke.jsonl"
 DEFAULT_GENERATION_TIMEOUT_SECONDS = 300.0
 DEFAULT_VERIFICATION_TIMEOUT_SECONDS = 120.0
 DEFAULT_RETRY_MAX_ATTEMPTS = 4
+DEFAULT_MAX_TRANSPORT_RETRIES = 2
 
 ExperimentWorkflow = Literal["run_one_shot", "run_retry"]
 
@@ -84,6 +85,7 @@ class OneShotWorkflowConfig:
     dataset: str
     model: str | None
     limit: int | None
+    max_transport_retries: int
     verbose: bool
 
 
@@ -95,6 +97,7 @@ class RetryWorkflowConfig:
     model: str | None
     max_attempts: int
     limit: int | None
+    max_transport_retries: int
     verbose: bool
 
 
@@ -121,6 +124,7 @@ class ResolvedExperimentConfig:
     limit: int | None
     verbose: bool
     retry_max_attempts: int
+    max_transport_retries: int
     generation_timeout_seconds: float
     verification_timeout_seconds: float
     artifact_root: str
@@ -190,6 +194,11 @@ def load_config(config_path: str | Path) -> RuntimeConfig:
             dataset=_string(one_shot, "dataset", DEFAULT_ONE_SHOT_DATASET_PATH),
             model=one_shot_model,
             limit=_optional_limit(one_shot, "limit"),
+            max_transport_retries=_non_negative_integer(
+                one_shot,
+                "max_transport_retries",
+                DEFAULT_MAX_TRANSPORT_RETRIES,
+            ),
             verbose=_boolean(one_shot, "verbose", False),
         ),
         run_retry=RetryWorkflowConfig(
@@ -201,6 +210,11 @@ def load_config(config_path: str | Path) -> RuntimeConfig:
                 DEFAULT_RETRY_MAX_ATTEMPTS,
             ),
             limit=_optional_limit(retry, "limit"),
+            max_transport_retries=_non_negative_integer(
+                retry,
+                "max_transport_retries",
+                DEFAULT_MAX_TRANSPORT_RETRIES,
+            ),
             verbose=_boolean(retry, "verbose", False),
         ),
     )
@@ -256,6 +270,7 @@ def resolve_experiment_config(
     limit: int | None = None,
     verbose: bool | None = None,
     retry_max_attempts: int | None = None,
+    max_transport_retries: int | None = None,
     generation_timeout_seconds: float | None = None,
     verification_timeout_seconds: float | None = None,
 ) -> ResolvedExperimentConfig:
@@ -278,12 +293,20 @@ def resolve_experiment_config(
     selected_attempts = configured_attempts if retry_max_attempts is None else retry_max_attempts
     if selected_attempts <= 0:
         raise ConfigurationError("retry_max_attempts must be greater than zero")
+    selected_transport_retries = (
+        workflow_config.max_transport_retries
+        if max_transport_retries is None
+        else max_transport_retries
+    )
+    if selected_transport_retries < 0:
+        raise ConfigurationError("max_transport_retries must be non-negative")
     return ResolvedExperimentConfig(
         dataset_path=dataset_path or workflow_config.dataset,
         model_alias=selected_model,
         limit=selected_limit,
         verbose=workflow_config.verbose if verbose is None else verbose,
         retry_max_attempts=selected_attempts,
+        max_transport_retries=selected_transport_retries,
         generation_timeout_seconds=_validate_positive_override(
             generation_timeout_seconds
             if generation_timeout_seconds is not None
@@ -383,10 +406,19 @@ def _integer(table: Mapping[str, object], name: str, fallback: int) -> int:
 
 
 def _optional_limit(table: Mapping[str, object], name: str) -> int | None:
-    value = table.get(name, 0)
+    value = table.get(name)
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise ConfigurationError(f"{name} must be a positive integer when provided")
+    return value
+
+
+def _non_negative_integer(table: Mapping[str, object], name: str, fallback: int) -> int:
+    value = table.get(name, fallback)
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         raise ConfigurationError(f"{name} must be a non-negative integer")
-    return value or None
+    return value
 
 
 def _bucket(table: Mapping[str, object], name: str, fallback: str) -> str:

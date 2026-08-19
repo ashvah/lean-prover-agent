@@ -52,6 +52,7 @@ def main(argv: list[str] | None = None) -> int:
             limit=args.limit,
             verbose=args.verbose,
             retry_max_attempts=args.max_attempts,
+            max_transport_retries=args.max_transport_retries,
             generation_timeout_seconds=args.generation_timeout_seconds,
             verification_timeout_seconds=args.verification_timeout_seconds,
         )
@@ -94,6 +95,7 @@ def main(argv: list[str] | None = None) -> int:
             output_path,
             model_alias=resolved.model_alias,
             max_attempts=resolved.retry_max_attempts,
+            max_transport_retries=resolved.max_transport_retries,
             dataset=safe_result_path(PROJECT_ROOT, dataset_path),
             generation_timeout_seconds=resolved.generation_timeout_seconds,
             verification_timeout_seconds=resolved.verification_timeout_seconds,
@@ -109,26 +111,35 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Dataset: {dataset_path.as_posix()}")
     print(f"Generation timeout: {resolved.generation_timeout_seconds:g} s")
     print(f"Verification timeout: {resolved.verification_timeout_seconds:g} s")
+    print(f"Max transport retries: {resolved.max_transport_retries}")
     print(f"Generation budget: {summary.generation_budget}")
     print(f"Solved: {summary.solved} / {summary.total}")
     print(f"Success rate: {summary.success_rate:.1f}%")
-    print(f"Average attempts / theorem: {summary.average_attempts_per_theorem:.2f}")
+    print(f"API requests: {summary.total_api_requests}")
+    print(f"Request failures: {summary.total_request_failures}")
+    print(f"Transport failures: {summary.total_transport_failures}")
+    print(f"Completed generations: {summary.total_generations}")
+    print(f"Average generations / theorem: {summary.average_generations_per_theorem:.2f}")
     print(
-        "Average attempts / solved theorem: "
-        + _format_optional(summary.average_attempts_per_solved_theorem)
+        "Average generations / solved theorem: "
+        + _format_optional(summary.average_generations_per_solved_theorem)
     )
     print(f"Total prompt tokens (available): {_format_optional(summary.total_prompt_tokens)}")
     print(
         "Total completion tokens (available): " + _format_optional(summary.total_completion_tokens)
     )
     print(
-        f"Average prompt tokens / available attempt: {_format_optional(summary.average_prompt_tokens)}"
+        "Average prompt tokens / available generation: "
+        + _format_optional(summary.average_prompt_tokens)
     )
     print(
-        "Average completion tokens / available attempt: "
+        "Average completion tokens / available generation: "
         + _format_optional(summary.average_completion_tokens)
     )
-    print(f"Average generation latency / attempt: {summary.average_generation_latency_ms:.1f} ms")
+    print(
+        f"Average generation latency / completed generation: "
+        f"{summary.average_generation_latency_ms:.1f} ms"
+    )
     print(
         f"Average verification latency / verifier call: "
         f"{summary.average_verification_latency_ms:.1f} ms"

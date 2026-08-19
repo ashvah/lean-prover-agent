@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 from urllib.parse import urlparse
 
-from openai import OpenAI
+from openai import APIConnectionError, APIError, APITimeoutError, OpenAI
 
 DEFAULT_GENERATION_TIMEOUT_SECONDS = 300.0
 
@@ -47,6 +47,61 @@ class ConfigurationError(ValueError):
 
 class ProofGenerationError(RuntimeError):
     """Raised when a provider response does not contain a textual proof."""
+
+
+@dataclass(frozen=True)
+class ErrorDetails:
+    """Serializable failure details without provider credentials or request headers."""
+
+    stage: str
+    type: str
+    cause_type: str | None
+    message: str
+    status_code: int | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a compact JSON-compatible error record."""
+
+        record: dict[str, object] = {
+            "stage": self.stage,
+            "type": self.type,
+            "cause_type": self.cause_type,
+            "message": self.message,
+        }
+        if self.status_code is not None:
+            record["status_code"] = self.status_code
+        return record
+
+    @classmethod
+    def from_exception(cls, stage: str, error: Exception) -> ErrorDetails:
+        """Describe a project-owned exception without exposing traceback internals."""
+
+        cause = error.__cause__ or error.__context__
+        return cls(
+            stage=stage,
+            type=type(error).__name__,
+            cause_type=type(cause).__name__ if cause is not None else None,
+            message=str(error),
+            status_code=getattr(error, "status_code", None),
+        )
+
+
+class GenerationRequestError(RuntimeError):
+    """Project-owned provider request failure with retry-relevant classification."""
+
+    def __init__(
+        self,
+        details: ErrorDetails,
+        *,
+        retryable: bool,
+        transport: bool,
+        elapsed_ms: int | None = None,
+    ) -> None:
+        super().__init__(details.message)
+        self.details = details
+        self.retryable = retryable
+        self.transport = transport
+        self.elapsed_ms = elapsed_ms
 
 
 @dataclass(frozen=True)
@@ -150,9 +205,14 @@ class OpenAICompatibleProofModel:
         }
         if self._config.reasoning_split:
             request["extra_body"] = {"reasoning_split": True}
-        response = self._client.chat.completions.create(
-            **request,
-        )
+        try:
+            response = self._client.chat.completions.create(
+                **request,
+            )
+        except (APITimeoutError, APIConnectionError) as error:
+            raise self._request_error(error, started, transport=True, retryable=True) from error
+        except APIError as error:
+            raise self._request_error(error, started, transport=False, retryable=False) from error
         latency_ms = round((time.perf_counter() - started) * 1000)
 
         try:
@@ -174,6 +234,30 @@ class OpenAICompatibleProofModel:
             latency_ms=latency_ms,
             prompt_tokens=getattr(usage, "prompt_tokens", None),
             completion_tokens=getattr(usage, "completion_tokens", None),
+        )
+
+    def _request_error(
+        self,
+        error: Exception,
+        started: float,
+        *,
+        transport: bool,
+        retryable: bool,
+    ) -> GenerationRequestError:
+        message = str(error).replace(self._config.api_key, "[REDACTED]")
+        cause = error.__cause__ or error.__context__
+        details = ErrorDetails(
+            stage="generation_request",
+            type=type(error).__name__,
+            cause_type=type(cause).__name__ if cause is not None else None,
+            message=message,
+            status_code=getattr(error, "status_code", None),
+        )
+        return GenerationRequestError(
+            details,
+            retryable=retryable,
+            transport=transport,
+            elapsed_ms=round((time.perf_counter() - started) * 1000),
         )
 
 

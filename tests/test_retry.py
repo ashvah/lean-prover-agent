@@ -33,7 +33,7 @@ def test_first_attempt_verified_stops_after_one_generation(tmp_path: Path) -> No
     assert model.calls == [statement]
     assert len(verifier.calls) == 1
     assert summary.solved == 1
-    assert summary.total_attempts == 1
+    assert summary.total_generations == 1
     assert record["strategy"] == "retry"
     assert record["generation_budget"] == 4
     assert record["generations_used"] == 1
@@ -72,9 +72,11 @@ def test_rejected_then_verified_uses_same_clean_statement_only(tmp_path: Path) -
     ]
     assert record["attempts"][0]["raw_model_output"] == failed_proof
     assert record["attempts"][1]["raw_model_output"] == "by\n  trivial"
-    assert any("attempt 1/4 | generating..." in message for message in progress)
-    assert any("attempt 1/4 | REJECTED" in message for message in progress)
-    assert any("attempt 2/4 | VERIFIED" in message and "solved" in message for message in progress)
+    assert any("generation 1/4" in message and "generating..." in message for message in progress)
+    assert any("generation 1/4 | REJECTED" in message for message in progress)
+    assert any(
+        "generation 2/4 | VERIFIED" in message and "solved" in message for message in progress
+    )
 
 
 def test_all_unsolved_statuses_use_full_generation_budget(tmp_path: Path) -> None:
@@ -116,7 +118,7 @@ def test_all_unsolved_statuses_use_full_generation_budget(tmp_path: Path) -> Non
     assert record["attempts"][0]["has_sorry"] is True
 
 
-def test_generation_error_is_recorded_and_next_attempt_remains_independent(tmp_path: Path) -> None:
+def test_generation_error_is_recorded_without_consuming_generation(tmp_path: Path) -> None:
     statement = "example : True"
     model = FakeModel([RuntimeError("provider unavailable"), generation("by\n  trivial")])
     verifier = FakeVerifier([VerificationStatus.VERIFIED])
@@ -132,11 +134,12 @@ def test_generation_error_is_recorded_and_next_attempt_remains_independent(tmp_p
     )
     record = load_record(output_path)
 
-    assert model.calls == [statement, statement]
-    assert record["attempts"][0]["verification_status"] is None
-    assert record["attempts"][0]["error"].startswith("generation_error: RuntimeError")
-    assert record["attempts"][1]["verification_status"] == "verified"
-    assert record["verifier_calls"] == 1
+    assert model.calls == [statement]
+    assert record["attempts"] == []
+    assert record["request_attempts"][0]["error"]["type"] == "RuntimeError"
+    assert record["terminal_status"] == "generation_error"
+    assert record["generations_used"] == 0
+    assert record["verifier_calls"] == 0
 
 
 def test_output_format_failure_skips_lean_and_next_attempt_remains_independent(
@@ -159,8 +162,10 @@ def test_output_format_failure_skips_lean_and_next_attempt_remains_independent(
 
     assert model.calls == [statement, statement]
     assert verifier.calls == [(statement, "by\n  trivial")]
+    assert record["generations_used"] == 2
+    assert len(record["attempts"]) == 2
     assert record["attempts"][0]["normalized_proof"] == ""
-    assert record["attempts"][0]["error"].startswith("generation_error: ProofGenerationError")
+    assert record["attempts"][0]["error"]["stage"] == "normalization"
     assert record["attempts"][1]["verification_status"] == "verified"
 
 
@@ -199,10 +204,10 @@ def test_result_and_summary_preserve_token_availability(tmp_path: Path) -> None:
     assert summary.total_completion_tokens == 5
     assert summary.average_prompt_tokens == 10.0
     assert summary.average_completion_tokens == 2.5
-    assert summary.prompt_token_attempts == 1
-    assert summary.completion_token_attempts == 2
-    assert summary.average_attempts_per_theorem == 2.0
-    assert summary.average_attempts_per_solved_theorem == 2.0
+    assert summary.prompt_token_generations == 1
+    assert summary.completion_token_generations == 2
+    assert summary.average_generations_per_theorem == 2.0
+    assert summary.average_generations_per_solved_theorem == 2.0
 
 
 def test_default_path_and_cli_default_identify_retry_budget(tmp_path: Path) -> None:

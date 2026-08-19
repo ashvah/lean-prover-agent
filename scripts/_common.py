@@ -27,6 +27,15 @@ def positive_number(value: str) -> float:
     return parsed_value
 
 
+def non_negative_integer(value: str) -> int:
+    """Parse one command-line integer that may be zero."""
+
+    parsed_value = int(value)
+    if parsed_value < 0:
+        raise argparse.ArgumentTypeError("must be non-negative")
+    return parsed_value
+
+
 def add_runtime_arguments(
     parser: argparse.ArgumentParser,
     *,
@@ -48,6 +57,11 @@ def add_runtime_arguments(
         help="List configured model aliases with available API-key secrets and exit",
     )
     parser.add_argument("--limit", type=positive_integer, help="Override the configured limit")
+    parser.add_argument(
+        "--max-transport-retries",
+        type=non_negative_integer,
+        help="Override additional provider requests allowed after transport failures",
+    )
     if include_retry:
         parser.add_argument(
             "--max-attempts",

@@ -382,7 +382,8 @@ def _render_result_card(record: dict[str, object]) -> str:
         if reasoning_output
         else ""
     )
-    runner_error = _text(selected_record.get("error"))
+    runner_error_value = selected_record.get("error") or record.get("error")
+    runner_error = _format_error(runner_error_value)
     runner_error_html = (
         f"<h4>Runner diagnostic</h4><pre><code>{_escape(runner_error)}</code></pre>"
         if runner_error
@@ -397,6 +398,7 @@ def _render_result_card(record: dict[str, object]) -> str:
     )
     retry_metadata_html = _render_retry_metadata(record, attempts)
     attempts_html = _render_retry_attempts(attempts)
+    request_attempts_html = _render_request_attempts(record)
     task_metadata_html = _render_task_metadata(record)
     return f"""
 <article class="result-card {benchmark_key}" data-status="{benchmark_key}" data-search="{_escape(search_text)}">
@@ -406,6 +408,7 @@ def _render_result_card(record: dict[str, object]) -> str:
   </header>
   <p class="verification-status">Verifier status: <strong class="verifier-{verification_key}">{_escape(verification_status)}</strong></p>
   <p class="benchmark-result">Benchmark result: <strong>{benchmark_status}</strong></p>
+  <p class="terminal-status">Terminal status: <strong>{_escape(record.get("terminal_status") or "legacy / unavailable")}</strong></p>
   {retry_metadata_html}
   {task_metadata_html}
   <dl class="latencies">
@@ -438,11 +441,12 @@ def _render_result_card(record: dict[str, object]) -> str:
     {runner_error_html}
   </details>
   {attempts_html}
+  {request_attempts_html}
 </article>""".strip()
 
 
 def _render_retry_metadata(record: dict[str, object], attempts: Sequence[dict[str, object]]) -> str:
-    if not attempts:
+    if _text(record.get("strategy")) != "retry":
         return ""
     return f"""
   <dl class="retry-metadata">
@@ -450,6 +454,9 @@ def _render_retry_metadata(record: dict[str, object], attempts: Sequence[dict[st
     <div><dt>Generation budget</dt><dd>{_escape(record.get("generation_budget"))}</dd></div>
     <div><dt>Generations used</dt><dd>{_escape(record.get("generations_used"))}</dd></div>
     <div><dt>Verifier calls</dt><dd>{_escape(record.get("verifier_calls"))}</dd></div>
+    <div><dt>API requests</dt><dd>{_escape(record.get("api_requests"))}</dd></div>
+    <div><dt>Request failures</dt><dd>{_escape(record.get("request_failures"))}</dd></div>
+    <div><dt>Transport failures</dt><dd>{_escape(record.get("transport_failures"))}</dd></div>
     <div><dt>Selected attempt</dt><dd>{len(attempts)}</dd></div>
   </dl>""".strip()
 
@@ -487,7 +494,7 @@ def _render_retry_attempt(attempt: dict[str, object]) -> str:
         if prompt_tokens is not None and completion_tokens is not None
         else None
     )
-    error = _text(attempt.get("error"))
+    error = _format_error(attempt.get("error"))
     return f"""
     <section class="retry-attempt">
       <h4>Attempt {_escape(attempt_index)} — <span class="verifier-{status_key}">{_escape(status)}</span></h4>
@@ -509,6 +516,31 @@ def _render_retry_attempt(attempt: dict[str, object]) -> str:
       <details><summary>Raw model output</summary><pre><code>{_escape(attempt.get("raw_model_output"))}</code></pre></details>
       <details><summary>Lean diagnostics</summary><h5>stdout</h5><pre><code>{_escape(attempt.get("lean_stdout"))}</code></pre><h5>stderr</h5><pre><code>{_escape(attempt.get("lean_stderr"))}</code></pre><h5>runner error</h5><pre><code>{_escape(error)}</code></pre></details>
     </section>""".strip()
+
+
+def _render_request_attempts(record: dict[str, object]) -> str:
+    request_attempts = record.get("request_attempts")
+    if not isinstance(request_attempts, list) or not request_attempts:
+        return ""
+    rows: list[str] = []
+    for request in request_attempts:
+        if not isinstance(request, dict):
+            continue
+        rows.append(
+            "<tr>"
+            f"<td>{_escape(request.get('request_index'))}</td>"
+            f"<td>{_escape(request.get('target_generation_index'))}</td>"
+            f"<td>{_escape(request.get('status'))}</td>"
+            f"<td>{_escape(request.get('elapsed_ms'))} ms</td>"
+            f"<td><pre><code>{_escape(_format_error(request.get('error')))}</code></pre></td>"
+            "</tr>"
+        )
+    return (
+        '<details class="request-attempts"><summary>Provider request trajectory '
+        f"({len(rows)})</summary><table><thead><tr><th>Request</th><th>Target generation</th>"
+        f"<th>Status</th><th>Latency</th><th>Error</th></tr></thead><tbody>{''.join(rows)}"
+        "</tbody></table></details>"
+    )
 
 
 def _render_token_chart(records: Sequence[dict[str, object]]) -> str:
@@ -552,17 +584,21 @@ def _render_lean_record(record: dict[str, object]) -> list[str]:
     theorem_id = _lean_comment_text(record.get("theorem_id"))
     statement = _text(record.get("statement"))
     normalized_proof = _text(selected_record.get("normalized_proof"))
-    error = _text(selected_record.get("error"))
+    error_value = selected_record.get("error") or record.get("error")
+    error = _format_error(error_value)
     retry_metadata = (
         [
             f"strategy: {_lean_comment_text(record.get('strategy'))}",
             f"selected_attempt: {len(attempts)} of {_lean_comment_text(record.get('generations_used'))} used",
             f"generation_budget: {_lean_comment_text(record.get('generation_budget'))}",
+            f"terminal_status: {_lean_comment_text(record.get('terminal_status'))}",
         ]
-        if attempts
+        if _text(record.get("strategy")) == "retry"
         else []
     )
-    if error.startswith("generation_error:") and not normalized_proof:
+    if not normalized_proof and (
+        error or record.get("terminal_status") in {"generation_error", "transport_retry_exhausted"}
+    ):
         return [
             "/-",
             f"theorem_id: {theorem_id}",
@@ -573,7 +609,7 @@ def _render_lean_record(record: dict[str, object]) -> list[str]:
             "statement:",
             _lean_comment_text(statement),
             "error category:",
-            _lean_comment_text(_safe_error_category(error)),
+            _lean_comment_text(_safe_error_category(error_value)),
             "-/",
             "",
         ]
@@ -665,8 +701,10 @@ def _verification_status_label(record: dict[str, object]) -> str:
         return status.upper()
     attempts = _retry_attempts(record)
     selected_record = attempts[-1] if attempts else record
-    if status_field in record and _text(selected_record.get("error")).startswith(
-        "generation_error:"
+    if status_field in record and (
+        selected_record.get("error")
+        or record.get("error")
+        or record.get("terminal_status") in {"generation_error", "transport_retry_exhausted"}
     ):
         return "NOT RUN"
     if status_field not in record and record.get("verified") is True:
@@ -713,8 +751,19 @@ def _lean_comment_text(value: object) -> str:
     return _text(value).replace("/-", "/ -").replace("-/", "- /")
 
 
-def _safe_error_category(error: str) -> str:
-    return ": ".join(part.strip() for part in error.split(":", maxsplit=2)[:2])
+def _format_error(error: object) -> str:
+    if isinstance(error, dict):
+        return json.dumps(error, ensure_ascii=False, indent=2, sort_keys=True)
+    return _text(error)
+
+
+def _safe_error_category(error: object) -> str:
+    if isinstance(error, dict):
+        stage = _text(error.get("stage"))
+        error_type = _text(error.get("type"))
+        return ": ".join(value for value in (stage, error_type) if value)
+    text = _text(error)
+    return ": ".join(part.strip() for part in text.split(":", maxsplit=2)[:2])
 
 
 _HTML_TEMPLATE = """<!doctype html>

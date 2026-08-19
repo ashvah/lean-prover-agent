@@ -1,14 +1,20 @@
 """Proof-generation strategies and their result records."""
 
-from leanproof.strategies.one_shot import (
+from leanproof.strategies.common import (
+    DEFAULT_MAX_TRANSPORT_RETRIES,
     DatasetError,
-    OneShotResult,
-    OneShotSummary,
+    ProgressCallback,
+    ProofVerifier,
+    RequestAttempt,
     TaskDifficulty,
     TaskMetadata,
     TheoremTask,
-    default_output_path,
     load_dataset,
+)
+from leanproof.strategies.one_shot import (
+    OneShotResult,
+    OneShotSummary,
+    default_output_path,
     run_one_shot,
 )
 from leanproof.strategies.retry import (
@@ -22,9 +28,13 @@ from leanproof.strategies.retry import (
 
 __all__ = [
     "DEFAULT_MAX_ATTEMPTS",
+    "DEFAULT_MAX_TRANSPORT_RETRIES",
     "DatasetError",
     "OneShotResult",
     "OneShotSummary",
+    "ProgressCallback",
+    "ProofVerifier",
+    "RequestAttempt",
     "RetryAttempt",
     "RetryResult",
     "RetrySummary",

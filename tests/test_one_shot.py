@@ -125,19 +125,26 @@ def test_runner_records_raw_and_normalized_output_and_continues(tmp_path) -> Non
     assert records[1]["normalized_proof"] == ""
     assert records[1]["verification_status"] is None
     assert records[1]["verified"] is False
-    assert records[1]["error"].startswith("generation_error: ProofGenerationError")
+    assert records[1]["error"]["stage"] == "normalization"
     assert records[2]["raw_model_output"] == ""
     assert records[2]["proof_output"] == ""
     assert records[2]["reasoning_output"] is None
     assert records[2]["verification_status"] is None
-    assert records[2]["error"].startswith("generation_error: RuntimeError")
-    assert progress_messages[0] == "[1/3] valid | generating..."
-    assert progress_messages[1] == "[1/3] valid | generated   | 11 ms"
-    assert progress_messages[2] == "[1/3] valid | verifying..."
-    assert progress_messages[3].startswith("[1/3] valid | PASS")
-    assert progress_messages[6].startswith("[2/3] malformed | ERROR")
-    assert progress_messages[7] == "[3/3] api-error | generating..."
-    assert progress_messages[8].startswith("[3/3] api-error | ERROR")
+    assert records[2]["error"]["type"] == "RuntimeError"
+    assert progress_messages[0].endswith("request 1 | generating...")
+    assert progress_messages[1].endswith("generation 1/1 | generated | 11 ms")
+    assert progress_messages[2].endswith("generation 1/1 | verifying...")
+    assert "generation 1/1 | PASS | verify 7 ms" in progress_messages[3]
+    assert any(
+        "[2/3] malformed" in message and "generated" in message for message in progress_messages
+    )
+    assert any(
+        "[3/3] api-error" in message and "generating..." in message for message in progress_messages
+    )
+    assert any(
+        "[3/3] api-error" in message and "GENERATION_ERROR" in message
+        for message in progress_messages
+    )
     assert all("exact h" not in message for message in progress_messages)
 
 
@@ -252,7 +259,7 @@ def test_runner_continues_after_verifier_exception(tmp_path) -> None:
     assert len(model.calls) == 2
     assert len(verifier.calls) == 2
     assert records[0]["verified"] is False
-    assert records[0]["error"].startswith("verification_error: RuntimeError")
+    assert records[0]["error"]["stage"] == "verification"
     assert records[1]["verified"] is True
     assert summary.solved == 1
 

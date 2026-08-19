@@ -16,6 +16,8 @@ from leanproof.datasets import DataPaths
 from leanproof.models import ConfigurationError, OpenAICompatibleProofModel
 from scripts.inspect_dataset import build_argument_parser as build_inspect_parser
 from scripts.prepare_dataset import build_argument_parser as build_prepare_parser
+from scripts.run_one_shot import build_argument_parser as build_one_shot_parser
+from scripts.run_retry import build_argument_parser as build_retry_parser
 from scripts.sample_dataset import build_argument_parser as build_sample_parser
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -50,6 +52,50 @@ def test_default_toml_loads_models_and_separate_timeouts() -> None:
     assert config.run_retry.dataset.endswith("0000_medium_50_seed42.jsonl")
     assert config.run_retry.model == "minimax"
     assert config.run_retry.max_attempts == 4
+    assert config.run_one_shot.limit is None
+    assert config.run_retry.limit is None
+    assert config.run_one_shot.max_transport_retries == 2
+    assert config.run_retry.max_transport_retries == 2
+
+
+@pytest.mark.parametrize("invalid_limit", [0, -1])
+def test_non_positive_limit_is_invalid_in_toml_instead_of_meaning_unlimited(
+    tmp_path: Path, invalid_limit: int
+) -> None:
+    path = write_config(tmp_path / "invalid-limit.toml")
+    contents = path.read_text(encoding="utf-8").replace(
+        'model = "alpha"\nmax_transport_retries = 2',
+        f'model = "alpha"\nlimit = {invalid_limit}\nmax_transport_retries = 2',
+        1,
+    )
+    path.write_text(contents, encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="limit must be a positive integer"):
+        load_config(path)
+
+
+def test_positive_toml_limit_is_preserved(tmp_path: Path) -> None:
+    path = write_config(tmp_path / "positive-limit.toml")
+    contents = path.read_text(encoding="utf-8").replace(
+        'model = "alpha"\nmax_transport_retries = 2',
+        'model = "alpha"\nlimit = 5\nmax_transport_retries = 2',
+        1,
+    )
+    path.write_text(contents, encoding="utf-8")
+
+    assert load_config(path).run_one_shot.limit == 5
+
+
+def test_experiment_cli_limit_is_positive_and_transport_retries_are_non_negative() -> None:
+    one_shot = build_one_shot_parser().parse_args(["--max-transport-retries", "0"])
+    retry = build_retry_parser().parse_args(["--max-transport-retries", "3"])
+
+    assert one_shot.max_transport_retries == 0
+    assert retry.max_transport_retries == 3
+    with pytest.raises(SystemExit):
+        build_one_shot_parser().parse_args(["--limit", "0"])
+    with pytest.raises(SystemExit):
+        build_retry_parser().parse_args(["--max-transport-retries", "-1"])
 
 
 def test_malformed_toml_fails_clearly(tmp_path: Path) -> None:
@@ -305,14 +351,14 @@ source_file = "raw.jsonl"
 [run_one_shot]
 dataset = "{one_shot_dataset}"
 model = "{one_shot_model}"
-limit = 0
+max_transport_retries = 2
 verbose = false
 
 [run_retry]
 dataset = "{retry_dataset}"
 model = "{retry_model}"
 max_attempts = {attempts}
-limit = 0
+max_transport_retries = 2
 verbose = false
 ''',
         encoding="utf-8",

@@ -11,8 +11,25 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from leanproof.lean import VerificationStatus
-from leanproof.models import GenerationResult, ProofGenerationError, ProofModel, normalize_proof
-from leanproof.strategies.one_shot import ProgressCallback, ProofVerifier, TheoremTask
+from leanproof.models import (
+    ErrorDetails,
+    GenerationResult,
+    ProofGenerationError,
+    ProofModel,
+    normalize_proof,
+)
+from leanproof.strategies.common import (
+    DEFAULT_MAX_TRANSPORT_RETRIES,
+    ProgressCallback,
+    ProofVerifier,
+    RequestAttempt,
+    TheoremTask,
+    acquire_generation,
+    elapsed_since,
+    error_details,
+    remove_empty_status_codes,
+    report_progress,
+)
 
 DEFAULT_MAX_ATTEMPTS = 4
 RETRY_STRATEGY = "retry"
@@ -20,9 +37,10 @@ RETRY_STRATEGY = "retry"
 
 @dataclass(frozen=True)
 class RetryAttempt:
-    """One independent generation and its optional Lean verification."""
+    """One completed independent generation and its optional Lean verification."""
 
     attempt_index: int
+    request_index: int
     raw_model_output: str
     reasoning_output: str | None
     proof_output: str
@@ -37,12 +55,12 @@ class RetryAttempt:
     generation_latency_ms: int
     verification_latency_ms: int
     total_attempt_latency_ms: int
-    error: str | None
+    error: ErrorDetails | None
 
 
 @dataclass(frozen=True)
 class RetryResult:
-    """Serializable theorem-level retry trajectory."""
+    """Serializable theorem-level request and generation trajectory."""
 
     theorem_id: str
     statement: str
@@ -54,9 +72,15 @@ class RetryResult:
     generation_budget: int
     generation_timeout_seconds: float | None
     verification_timeout_seconds: float | None
+    max_transport_retries: int
+    request_attempts: tuple[RequestAttempt, ...]
     attempts: tuple[RetryAttempt, ...]
+    terminal_status: str
     final_verification_status: str | None
     solved: bool
+    api_requests: int
+    request_failures: int
+    transport_failures: int
     generations_used: int
     verifier_calls: int
     prompt_tokens: int | None
@@ -64,31 +88,36 @@ class RetryResult:
     generation_latency_ms: int
     verification_latency_ms: int
     total_latency_ms: int
+    error: ErrorDetails | None
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-compatible theorem trajectory without changing raw outputs."""
 
         record = asdict(self)
-        record["attempts"] = [asdict(attempt) for attempt in self.attempts]
+        remove_empty_status_codes(record)
         return record
 
 
 @dataclass(frozen=True)
 class RetrySummary:
-    """Aggregate metrics printed after an independent retry batch."""
+    """Aggregate metrics for requests, completed generations, and verifier calls."""
 
     total: int
     solved: int
     generation_budget: int
-    total_attempts: int
-    average_attempts_per_theorem: float
-    average_attempts_per_solved_theorem: float | None
+    total_api_requests: int
+    total_request_failures: int
+    total_transport_failures: int
+    total_generations: int
+    total_verifier_calls: int
+    average_generations_per_theorem: float
+    average_generations_per_solved_theorem: float | None
     total_prompt_tokens: int | None
     total_completion_tokens: int | None
     average_prompt_tokens: float | None
     average_completion_tokens: float | None
-    prompt_token_attempts: int
-    completion_token_attempts: int
+    prompt_token_generations: int
+    completion_token_generations: int
     average_generation_latency_ms: float
     average_verification_latency_ms: float
     output_path: Path
@@ -127,16 +156,19 @@ def run_retry(
     *,
     model_alias: str,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    max_transport_retries: int = DEFAULT_MAX_TRANSPORT_RETRIES,
     dataset: str | None = None,
     generation_timeout_seconds: float | None = None,
     verification_timeout_seconds: float | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> RetrySummary:
-    """Run independent proof generations until VERIFIED or the budget is exhausted."""
+    """Run independent completed generations until VERIFIED or budget exhaustion."""
 
     if not tasks:
         raise ValueError("tasks must not be empty")
     _validate_max_attempts(max_attempts)
+    if max_transport_retries < 0:
+        raise ValueError("max_transport_retries must be non-negative")
 
     destination = Path(output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -149,6 +181,7 @@ def run_retry(
                 verifier,
                 model_alias=model_alias,
                 max_attempts=max_attempts,
+                max_transport_retries=max_transport_retries,
                 dataset=dataset,
                 generation_timeout_seconds=generation_timeout_seconds,
                 verification_timeout_seconds=verification_timeout_seconds,
@@ -170,6 +203,7 @@ def _run_theorem_retry(
     *,
     model_alias: str,
     max_attempts: int,
+    max_transport_retries: int,
     dataset: str | None,
     generation_timeout_seconds: float | None,
     verification_timeout_seconds: float | None,
@@ -179,115 +213,115 @@ def _run_theorem_retry(
 ) -> RetryResult:
     theorem_started = time.perf_counter()
     attempts: list[RetryAttempt] = []
+    request_attempts: list[RequestAttempt] = []
     verifier_calls = 0
-    for attempt_index in range(1, max_attempts + 1):
+    terminal_status: str | None = None
+    terminal_error: ErrorDetails | None = None
+
+    while len(attempts) < max_attempts:
+        attempt_started = time.perf_counter()
+        attempt_index = len(attempts) + 1
         prefix = (
             f"[{theorem_index}/{total_theorems}] {task.theorem_id} | "
-            f"attempt {attempt_index}/{max_attempts}"
+            f"generation {attempt_index}/{max_attempts}"
         )
-        _report_progress(progress_callback, f"{prefix} | generating...")
-        attempt_started = time.perf_counter()
-        generation_started = time.perf_counter()
+        acquisition = acquire_generation(
+            model,
+            task.statement,
+            target_generation_index=attempt_index,
+            first_request_index=len(request_attempts) + 1,
+            max_transport_retries=max_transport_retries,
+            progress_prefix=prefix,
+            progress_callback=progress_callback,
+        )
+        request_attempts.extend(acquisition.request_attempts)
+        generation = acquisition.generation
+        if generation is None:
+            terminal_status = acquisition.terminal_status or "generation_error"
+            terminal_error = acquisition.error
+            break
+
+        request_index = acquisition.request_attempts[-1].request_index
+        report_progress(progress_callback, f"{prefix} | generated | {generation.latency_ms} ms")
         try:
-            generation = model.generate_proof(task.statement)
-        except Exception as error:  # noqa: BLE001
-            generation_latency_ms = _elapsed_ms(generation_started)
-            attempt = RetryAttempt(
-                attempt_index=attempt_index,
-                raw_model_output="",
-                reasoning_output=None,
-                proof_output="",
+            normalized_proof = normalize_proof(generation.proof_output)
+        except ProofGenerationError as error:
+            attempt = _generation_attempt(
+                attempt_index,
+                request_index,
+                generation,
                 normalized_proof="",
                 verification_status=None,
                 verified=False,
                 has_sorry=False,
                 lean_stdout="",
                 lean_stderr="",
-                prompt_tokens=None,
-                completion_tokens=None,
-                generation_latency_ms=generation_latency_ms,
                 verification_latency_ms=0,
-                total_attempt_latency_ms=_elapsed_ms(attempt_started),
-                error=f"generation_error: {type(error).__name__}: {error}",
+                total_attempt_latency_ms=elapsed_since(attempt_started),
+                error=error_details("normalization", error),
             )
             attempts.append(attempt)
-            _report_progress(
+            report_progress(
                 progress_callback,
-                f"{prefix} | ERROR | generation {generation_latency_ms} ms | "
-                f"total {attempt.total_attempt_latency_ms} ms",
+                f"{prefix} | OUTPUT_FORMAT_ERROR | total {attempt.total_attempt_latency_ms} ms",
             )
             continue
 
-        _report_progress(
-            progress_callback,
-            f"{prefix} | generated | {generation.latency_ms} ms",
-        )
-        try:
-            normalized_proof = normalize_proof(generation.proof_output)
-        except ProofGenerationError as error:
-            attempt = _proof_format_failure_attempt(
-                attempt_index,
-                generation,
-                _elapsed_ms(attempt_started),
-                error,
-            )
-            attempts.append(attempt)
-            _report_progress(
-                progress_callback,
-                f"{prefix} | ERROR | output format | total {attempt.total_attempt_latency_ms} ms",
-            )
-            continue
-        _report_progress(progress_callback, f"{prefix} | verifying...")
+        report_progress(progress_callback, f"{prefix} | verifying...")
         verification_started = time.perf_counter()
         verifier_calls += 1
         try:
             verification = verifier.verify(task.statement, normalized_proof)
         except Exception as error:  # noqa: BLE001
-            verification_latency_ms = _elapsed_ms(verification_started)
-            attempt = _verification_exception_attempt(
+            attempt = _generation_attempt(
                 attempt_index,
+                request_index,
                 generation,
-                normalized_proof,
-                verification_latency_ms,
-                _elapsed_ms(attempt_started),
-                error,
+                normalized_proof=normalized_proof,
+                verification_status=VerificationStatus.EXECUTION_ERROR.value,
+                verified=False,
+                has_sorry=False,
+                lean_stdout="",
+                lean_stderr="",
+                verification_latency_ms=elapsed_since(verification_started),
+                total_attempt_latency_ms=elapsed_since(attempt_started),
+                error=error_details("verification", error),
             )
         else:
-            attempt = RetryAttempt(
-                attempt_index=attempt_index,
-                raw_model_output=generation.raw_output,
-                reasoning_output=generation.reasoning_output,
-                proof_output=generation.proof_output,
+            attempt = _generation_attempt(
+                attempt_index,
+                request_index,
+                generation,
                 normalized_proof=normalized_proof,
                 verification_status=verification.status.value,
                 verified=verification.verified,
                 has_sorry=verification.has_sorry,
                 lean_stdout=verification.stdout,
                 lean_stderr=verification.stderr,
-                prompt_tokens=generation.prompt_tokens,
-                completion_tokens=generation.completion_tokens,
-                generation_latency_ms=generation.latency_ms,
                 verification_latency_ms=verification.elapsed_ms,
-                total_attempt_latency_ms=_elapsed_ms(attempt_started),
+                total_attempt_latency_ms=elapsed_since(attempt_started),
                 error=None,
             )
         attempts.append(attempt)
-        status = (
-            attempt.verification_status.upper()
-            if attempt.verification_status is not None
-            else "NOT RUN"
-        )
+        status = attempt.verification_status.upper() if attempt.verification_status else "NOT RUN"
         solved_suffix = " | solved" if attempt.verified else ""
-        _report_progress(
+        report_progress(
             progress_callback,
             f"{prefix} | {status} | verify {attempt.verification_latency_ms} ms | "
             f"total {attempt.total_attempt_latency_ms} ms{solved_suffix}",
         )
         if attempt.verified:
+            terminal_status = "verified"
             break
 
+    if terminal_status is None:
+        terminal_status = (
+            "verified"
+            if any(attempt.verified for attempt in attempts)
+            else ("generation_budget_exhausted")
+        )
     attempt_tuple = tuple(attempts)
-    final_attempt = attempt_tuple[-1]
+    request_tuple = tuple(request_attempts)
     return RetryResult(
         theorem_id=task.theorem_id,
         statement=task.statement,
@@ -299,9 +333,15 @@ def _run_theorem_retry(
         generation_budget=max_attempts,
         generation_timeout_seconds=generation_timeout_seconds,
         verification_timeout_seconds=verification_timeout_seconds,
+        max_transport_retries=max_transport_retries,
+        request_attempts=request_tuple,
         attempts=attempt_tuple,
-        final_verification_status=final_attempt.verification_status,
-        solved=final_attempt.verified,
+        terminal_status=terminal_status,
+        final_verification_status=_last_verification_status(attempt_tuple),
+        solved=any(attempt.verified for attempt in attempt_tuple),
+        api_requests=len(request_tuple),
+        request_failures=sum(request.status != "completed" for request in request_tuple),
+        transport_failures=sum(request.status == "transport_failure" for request in request_tuple),
         generations_used=len(attempt_tuple),
         verifier_calls=verifier_calls,
         prompt_tokens=_complete_token_sum(attempt.prompt_tokens for attempt in attempt_tuple),
@@ -310,61 +350,55 @@ def _run_theorem_retry(
         ),
         generation_latency_ms=sum(attempt.generation_latency_ms for attempt in attempt_tuple),
         verification_latency_ms=sum(attempt.verification_latency_ms for attempt in attempt_tuple),
-        total_latency_ms=_elapsed_ms(theorem_started),
+        total_latency_ms=elapsed_since(theorem_started),
+        error=terminal_error,
     )
 
 
-def _verification_exception_attempt(
+def _generation_attempt(
     attempt_index: int,
+    request_index: int,
     generation: GenerationResult,
+    *,
     normalized_proof: str,
+    verification_status: str | None,
+    verified: bool,
+    has_sorry: bool,
+    lean_stdout: str,
+    lean_stderr: str,
     verification_latency_ms: int,
     total_attempt_latency_ms: int,
-    error: Exception,
+    error: ErrorDetails | None,
 ) -> RetryAttempt:
     return RetryAttempt(
         attempt_index=attempt_index,
+        request_index=request_index,
         raw_model_output=generation.raw_output,
         reasoning_output=generation.reasoning_output,
         proof_output=generation.proof_output,
         normalized_proof=normalized_proof,
-        verification_status=VerificationStatus.EXECUTION_ERROR.value,
-        verified=False,
-        has_sorry=False,
-        lean_stdout="",
-        lean_stderr="",
+        verification_status=verification_status,
+        verified=verified,
+        has_sorry=has_sorry,
+        lean_stdout=lean_stdout,
+        lean_stderr=lean_stderr,
         prompt_tokens=generation.prompt_tokens,
         completion_tokens=generation.completion_tokens,
         generation_latency_ms=generation.latency_ms,
         verification_latency_ms=verification_latency_ms,
         total_attempt_latency_ms=total_attempt_latency_ms,
-        error=f"verification_error: {type(error).__name__}: {error}",
+        error=error,
     )
 
 
-def _proof_format_failure_attempt(
-    attempt_index: int,
-    generation: GenerationResult,
-    total_attempt_latency_ms: int,
-    error: ProofGenerationError,
-) -> RetryAttempt:
-    return RetryAttempt(
-        attempt_index=attempt_index,
-        raw_model_output=generation.raw_output,
-        reasoning_output=generation.reasoning_output,
-        proof_output=generation.proof_output,
-        normalized_proof="",
-        verification_status=None,
-        verified=False,
-        has_sorry=False,
-        lean_stdout="",
-        lean_stderr="",
-        prompt_tokens=generation.prompt_tokens,
-        completion_tokens=generation.completion_tokens,
-        generation_latency_ms=generation.latency_ms,
-        verification_latency_ms=0,
-        total_attempt_latency_ms=total_attempt_latency_ms,
-        error=f"generation_error: {type(error).__name__}: {error}",
+def _last_verification_status(attempts: Sequence[RetryAttempt]) -> str | None:
+    return next(
+        (
+            attempt.verification_status
+            for attempt in reversed(attempts)
+            if attempt.verification_status is not None
+        ),
+        None,
     )
 
 
@@ -372,7 +406,7 @@ def _summarize_results(
     results: Sequence[RetryResult], max_attempts: int, output_path: Path
 ) -> RetrySummary:
     attempts = [attempt for result in results for attempt in result.attempts]
-    solved_attempt_counts = [result.generations_used for result in results if result.solved]
+    solved_generation_counts = [result.generations_used for result in results if result.solved]
     prompt_tokens = [
         attempt.prompt_tokens for attempt in attempts if attempt.prompt_tokens is not None
     ]
@@ -386,13 +420,17 @@ def _summarize_results(
     ]
     return RetrySummary(
         total=len(results),
-        solved=len(solved_attempt_counts),
+        solved=len(solved_generation_counts),
         generation_budget=max_attempts,
-        total_attempts=len(attempts),
-        average_attempts_per_theorem=len(attempts) / len(results),
-        average_attempts_per_solved_theorem=(
-            sum(solved_attempt_counts) / len(solved_attempt_counts)
-            if solved_attempt_counts
+        total_api_requests=sum(result.api_requests for result in results),
+        total_request_failures=sum(result.request_failures for result in results),
+        total_transport_failures=sum(result.transport_failures for result in results),
+        total_generations=len(attempts),
+        total_verifier_calls=sum(result.verifier_calls for result in results),
+        average_generations_per_theorem=len(attempts) / len(results),
+        average_generations_per_solved_theorem=(
+            sum(solved_generation_counts) / len(solved_generation_counts)
+            if solved_generation_counts
             else None
         ),
         total_prompt_tokens=sum(prompt_tokens) if prompt_tokens else None,
@@ -401,10 +439,12 @@ def _summarize_results(
         average_completion_tokens=(
             sum(completion_tokens) / len(completion_tokens) if completion_tokens else None
         ),
-        prompt_token_attempts=len(prompt_tokens),
-        completion_token_attempts=len(completion_tokens),
+        prompt_token_generations=len(prompt_tokens),
+        completion_token_generations=len(completion_tokens),
         average_generation_latency_ms=(
             sum(attempt.generation_latency_ms for attempt in attempts) / len(attempts)
+            if attempts
+            else 0.0
         ),
         average_verification_latency_ms=(
             sum(verification_latencies) / len(verification_latencies)
@@ -425,12 +465,3 @@ def _complete_token_sum(values: Iterable[int | None]) -> int | None:
 def _validate_max_attempts(max_attempts: int) -> None:
     if max_attempts <= 0:
         raise ValueError("max_attempts must be greater than zero")
-
-
-def _elapsed_ms(started: float) -> int:
-    return round((time.perf_counter() - started) * 1000)
-
-
-def _report_progress(progress_callback: ProgressCallback | None, message: str) -> None:
-    if progress_callback is not None:
-        progress_callback(message)

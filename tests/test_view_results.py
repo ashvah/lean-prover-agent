@@ -13,6 +13,60 @@ from scripts.view_results import (
 )
 
 
+def test_structured_request_errors_and_terminal_status_render_safely() -> None:
+    record = {
+        "theorem_id": "transport<&>",
+        "statement": "example : True",
+        "strategy": "retry",
+        "model": "mock",
+        "generation_budget": 2,
+        "attempts": [],
+        "request_attempts": [
+            {
+                "request_index": 1,
+                "target_generation_index": 1,
+                "status": "transport_failure",
+                "elapsed_ms": 17,
+                "error": {
+                    "stage": "generation_request",
+                    "type": "APIConnectionError",
+                    "cause_type": "ConnectTimeout",
+                    "message": "failed <script>alert(1)</script>",
+                },
+            }
+        ],
+        "terminal_status": "transport_retry_exhausted",
+        "final_verification_status": None,
+        "solved": False,
+        "api_requests": 1,
+        "request_failures": 1,
+        "transport_failures": 1,
+        "generations_used": 0,
+        "verifier_calls": 0,
+        "generation_latency_ms": 0,
+        "verification_latency_ms": 0,
+        "total_latency_ms": 17,
+        "error": {
+            "stage": "generation_request",
+            "type": "APIConnectionError",
+            "cause_type": "ConnectTimeout",
+            "message": "failed <script>alert(1)</script>",
+        },
+    }
+
+    summary = calculate_summary([record])
+    html = build_html([record], summary, "transport.jsonl")
+    lean = build_lean_export([record], summary, "transport.jsonl")
+
+    assert "transport_retry_exhausted" in html
+    assert "Provider request trajectory" in html
+    assert "ConnectTimeout" in html
+    assert "<script>alert(1)</script>" not in html
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
+    assert "No normalized proof was produced" in lean
+    assert "generation_request: APIConnectionError" in lean
+
+
 def test_legacy_results_path_uses_strategy_tree_without_changing_source(
     tmp_path: Path,
 ) -> None:

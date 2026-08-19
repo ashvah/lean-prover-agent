@@ -46,6 +46,7 @@ def main(argv: list[str] | None = None) -> int:
             model_alias=args.model,
             limit=args.limit,
             verbose=args.verbose,
+            max_transport_retries=args.max_transport_retries,
             generation_timeout_seconds=args.generation_timeout_seconds,
             verification_timeout_seconds=args.verification_timeout_seconds,
         )
@@ -84,6 +85,7 @@ def main(argv: list[str] | None = None) -> int:
             output_path,
             model_alias=resolved.model_alias,
             dataset=safe_result_path(PROJECT_ROOT, dataset_path),
+            max_transport_retries=resolved.max_transport_retries,
             generation_timeout_seconds=resolved.generation_timeout_seconds,
             verification_timeout_seconds=resolved.verification_timeout_seconds,
             progress_callback=print_progress if resolved.verbose else None,
@@ -97,10 +99,15 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Dataset: {dataset_path.as_posix()}")
     print(f"Generation timeout: {resolved.generation_timeout_seconds:g} s")
     print(f"Verification timeout: {resolved.verification_timeout_seconds:g} s")
+    print(f"Max transport retries: {resolved.max_transport_retries}")
     print(f"Solved: {summary.solved} / {summary.total}")
     print(f"Success rate: {summary.success_rate:.1f}%")
     print(f"Average generation latency: {summary.average_generation_latency_ms:.1f} ms")
     print(f"Average verification latency: {summary.average_verification_latency_ms:.1f} ms")
+    print(f"API requests: {summary.total_api_requests}")
+    print(f"Request failures: {summary.total_request_failures}")
+    print(f"Transport failures: {summary.total_transport_failures}")
+    print(f"Completed generations: {summary.total_generations}")
     print(f"Results: {summary.output_path.as_posix()}")
     return 0
 
