@@ -269,6 +269,90 @@ def test_lean_header_contains_only_safe_metadata(tmp_path: Path) -> None:
     assert "https://" not in header
 
 
+def test_retry_summary_and_html_render_attempts_in_order() -> None:
+    record = sample_retry_record()
+
+    summary = calculate_summary([record])
+    document = build_html([record], summary, "retry.jsonl")
+
+    assert summary.strategy == "retry"
+    assert summary.solved == 1
+    assert "Strategy</span><strong>retry" in document
+    assert "Generation budget</dt><dd>4" in document
+    assert "Generations used</dt><dd>2" in document
+    assert "Selected attempt</dt><dd>2" in document
+    assert "All retry attempts (2)" in document
+    assert document.index("Attempt 1") < document.index("Attempt 2")
+    assert "REJECTED" in document
+    assert "VERIFIED" in document
+    assert "first attempt reasoning" in document
+    assert "by\n  exact nonexistent_theorem" in document
+    assert "by\n  trivial" in document
+
+
+def test_retry_html_escapes_attempt_content() -> None:
+    record = sample_retry_record()
+    attempts = record["attempts"]
+    assert isinstance(attempts, list)
+    attempts[0]["raw_model_output"] = "<script>retry raw</script>"
+    attempts[0]["reasoning_output"] = "<aside>retry reasoning</aside>"
+    attempts[0]["lean_stderr"] = "</code><img src=x onerror=alert(1)>"
+
+    document = build_html([record], calculate_summary([record]), "retry-unsafe.jsonl")
+
+    assert "<script>retry raw</script>" not in document
+    assert "&lt;script&gt;retry raw&lt;/script&gt;" in document
+    assert "&lt;aside&gt;retry reasoning&lt;/aside&gt;" in document
+    assert "&lt;/code&gt;&lt;img src=x onerror=alert(1)&gt;" in document
+
+
+def test_retry_lean_export_selects_final_attempt_without_rewriting_proof() -> None:
+    record = sample_retry_record()
+
+    document = build_lean_export([record], calculate_summary([record]), "retry.jsonl")
+
+    assert "strategy: retry" in document
+    assert "selected_attempt: 2 of 2 used" in document
+    assert "generation_budget: 4" in document
+    assert "status: VERIFIED" in document
+    assert "benchmark_verified: true" in document
+    assert "example : True := by\n  trivial" in document
+    assert "exact nonexistent_theorem" not in document
+
+
+def test_retry_generation_error_export_remains_comment_only() -> None:
+    record = sample_retry_record()
+    record["solved"] = False
+    record["final_verification_status"] = None
+    attempts = record["attempts"]
+    assert isinstance(attempts, list)
+    attempts[-1] = {
+        "attempt_index": 2,
+        "raw_model_output": "",
+        "reasoning_output": None,
+        "proof_output": "",
+        "normalized_proof": "",
+        "verification_status": None,
+        "verified": False,
+        "has_sorry": False,
+        "lean_stdout": "",
+        "lean_stderr": "",
+        "prompt_tokens": None,
+        "completion_tokens": None,
+        "generation_latency_ms": 15,
+        "verification_latency_ms": 0,
+        "total_attempt_latency_ms": 15,
+        "error": "generation_error: RuntimeError: unavailable",
+    }
+
+    document = build_lean_export([record], calculate_summary([record]), "retry-error.jsonl")
+
+    assert "status: NOT RUN" in document
+    assert "No normalized proof was produced because generation failed." in document
+    assert "example : True :=" not in document
+    assert "sorry" not in document
+
+
 def write_jsonl(path: Path, records: list[dict[str, object]]) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -276,6 +360,64 @@ def write_jsonl(path: Path, records: list[dict[str, object]]) -> Path:
         encoding="utf-8",
     )
     return path
+
+
+def sample_retry_record() -> dict[str, object]:
+    return {
+        "theorem_id": "retry_theorem",
+        "statement": "example : True",
+        "strategy": "retry",
+        "model_alias": "mock",
+        "model": "mock-model",
+        "generation_budget": 4,
+        "attempts": [
+            {
+                "attempt_index": 1,
+                "raw_model_output": "by\n  exact nonexistent_theorem",
+                "reasoning_output": "first attempt reasoning",
+                "proof_output": "by\n  exact nonexistent_theorem",
+                "normalized_proof": "by\n  exact nonexistent_theorem",
+                "verification_status": "rejected",
+                "verified": False,
+                "has_sorry": False,
+                "lean_stdout": "",
+                "lean_stderr": "unknown identifier",
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "generation_latency_ms": 100,
+                "verification_latency_ms": 50,
+                "total_attempt_latency_ms": 150,
+                "error": None,
+            },
+            {
+                "attempt_index": 2,
+                "raw_model_output": "by\n  trivial",
+                "reasoning_output": None,
+                "proof_output": "by\n  trivial",
+                "normalized_proof": "by\n  trivial",
+                "verification_status": "verified",
+                "verified": True,
+                "has_sorry": False,
+                "lean_stdout": "",
+                "lean_stderr": "",
+                "prompt_tokens": 12,
+                "completion_tokens": 3,
+                "generation_latency_ms": 110,
+                "verification_latency_ms": 40,
+                "total_attempt_latency_ms": 150,
+                "error": None,
+            },
+        ],
+        "final_verification_status": "verified",
+        "solved": True,
+        "generations_used": 2,
+        "verifier_calls": 2,
+        "prompt_tokens": 22,
+        "completion_tokens": 8,
+        "generation_latency_ms": 210,
+        "verification_latency_ms": 90,
+        "total_latency_ms": 300,
+    }
 
 
 def sample_records() -> list[dict[str, object]]:
