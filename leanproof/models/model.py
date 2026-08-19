@@ -10,21 +10,30 @@ from urllib.parse import urlparse
 
 from openai import OpenAI
 
+DEFAULT_GENERATION_TIMEOUT_SECONDS = 300.0
+
 BASELINE_PROMPT_TEMPLATE = """Complete the following Lean 4 theorem.
 
-Return only a complete Lean proof beginning with `by`.
+Your response will be inserted directly after the theorem's `:=`.
 
-Do not return Markdown.
-Do not explain the proof.
-Do not repeat the theorem statement.
+Return exactly one complete Lean proof term.
+
+Requirements:
+- The first non-whitespace token must be `by`.
+- Return only the proof.
+- Do not repeat the theorem statement.
+- Do not use Markdown code fences.
+- Do not include explanations, labels, comments, or surrounding text.
+- Do not use `sorry` or `admit`.
+- The proof must be valid Lean 4 code in an environment with Mathlib imported.
 
 Theorem:
 
 {statement}"""
 
-_FENCED_PROOF_PATTERN = re.compile(
-    r"\A```(?:lean)?[ \t]*\r?\n(?P<proof>.*)\r?\n```[ \t]*\Z",
-    flags=re.IGNORECASE | re.DOTALL,
+_FENCED_BLOCK_PATTERN = re.compile(
+    r"^```[^\r\n]*\r?\n(?P<proof>.*?)\r?\n```[ \t]*(?:\r?\n|\Z)",
+    flags=re.DOTALL | re.MULTILINE,
 )
 _LEADING_THINK_PATTERN = re.compile(
     r"\A[ \t\r\n]*<think>(?P<reasoning>.*?)</think>(?P<answer>.*)\Z",
@@ -48,6 +57,8 @@ class LLMConfig:
     base_url: str
     model: str
     reasoning_split: bool = False
+    generation_timeout_seconds: float = DEFAULT_GENERATION_TIMEOUT_SECONDS
+    api_key_env: str | None = None
 
     def __post_init__(self) -> None:
         """Validate values regardless of which registry or test created the configuration."""
@@ -61,6 +72,12 @@ class LLMConfig:
             raise ConfigurationError("base_url must not be empty")
         if not model:
             raise ConfigurationError("model must not be empty")
+        if (
+            not isinstance(self.generation_timeout_seconds, (int, float))
+            or isinstance(self.generation_timeout_seconds, bool)
+            or self.generation_timeout_seconds <= 0
+        ):
+            raise ConfigurationError("generation_timeout_seconds must be greater than zero")
 
         parsed_url = urlparse(base_url)
         if (
@@ -75,6 +92,11 @@ class LLMConfig:
         object.__setattr__(self, "api_key", api_key)
         object.__setattr__(self, "base_url", base_url.rstrip("/"))
         object.__setattr__(self, "model", model)
+        if self.api_key_env is not None:
+            api_key_env = self.api_key_env.strip()
+            if not api_key_env:
+                raise ConfigurationError("api_key_env must not be empty when provided")
+            object.__setattr__(self, "api_key_env", api_key_env)
 
 
 @dataclass(frozen=True)
@@ -109,7 +131,7 @@ class OpenAICompatibleProofModel:
             api_key=config.api_key,
             base_url=config.base_url,
             max_retries=0,
-            timeout=60.0,
+            timeout=config.generation_timeout_seconds,
         )
 
     @property
@@ -161,14 +183,22 @@ def build_baseline_prompt(statement: str) -> str:
     return BASELINE_PROMPT_TEMPLATE.format(statement=statement)
 
 
-def normalize_proof(raw_output: str) -> str:
-    """Remove surrounding whitespace and one optional outer Lean code fence."""
+def normalize_proof(proof_output: str) -> str:
+    """Extract one proof-shaped payload using presentation-only cleanup."""
 
-    stripped_output = raw_output.strip()
-    fenced_match = _FENCED_PROOF_PATTERN.fullmatch(stripped_output)
-    if fenced_match:
-        return fenced_match.group("proof").strip()
-    return stripped_output
+    stripped_output = proof_output.strip()
+    fenced_candidates = [
+        match.group("proof").strip()
+        for match in _FENCED_BLOCK_PATTERN.finditer(stripped_output)
+        if _is_proof_shaped(match.group("proof"))
+    ]
+    if len(fenced_candidates) > 1:
+        raise ProofGenerationError("Provider output contains multiple plausible fenced proofs")
+    if fenced_candidates:
+        return fenced_candidates[0]
+    if _is_proof_shaped(stripped_output):
+        return stripped_output
+    raise ProofGenerationError("Provider output does not contain one proof beginning with `by`")
 
 
 def split_leading_think_block(raw_output: str) -> tuple[str, str | None]:
@@ -178,6 +208,10 @@ def split_leading_think_block(raw_output: str) -> tuple[str, str | None]:
     if match is None:
         return raw_output, None
     return match.group("answer").lstrip(), match.group("reasoning").strip()
+
+
+def _is_proof_shaped(value: str) -> bool:
+    return re.match(r"\Aby(?:\s|\Z)", value.lstrip()) is not None
 
 
 def _dedicated_reasoning_output(message: Any) -> str | None:

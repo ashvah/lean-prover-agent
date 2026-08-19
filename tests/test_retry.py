@@ -45,7 +45,8 @@ def test_first_attempt_verified_stops_after_one_generation(tmp_path: Path) -> No
 
 def test_rejected_then_verified_uses_same_clean_statement_only(tmp_path: Path) -> None:
     statement = "example : True"
-    model = FakeModel([generation("first failed proof"), generation("by\n  trivial")])
+    failed_proof = "by\n  exact nonexistent_theorem"
+    model = FakeModel([generation(failed_proof), generation("by\n  trivial")])
     verifier = FakeVerifier([VerificationStatus.REJECTED, VerificationStatus.VERIFIED])
     output_path = tmp_path / "second.jsonl"
     progress: list[str] = []
@@ -62,14 +63,14 @@ def test_rejected_then_verified_uses_same_clean_statement_only(tmp_path: Path) -
     record = load_record(output_path)
 
     assert model.calls == [statement, statement]
-    assert verifier.calls == [(statement, "first failed proof"), (statement, "by\n  trivial")]
+    assert verifier.calls == [(statement, failed_proof), (statement, "by\n  trivial")]
     assert summary.solved == 1
     assert record["generations_used"] == 2
     assert [attempt["verification_status"] for attempt in record["attempts"]] == [
         "rejected",
         "verified",
     ]
-    assert record["attempts"][0]["raw_model_output"] == "first failed proof"
+    assert record["attempts"][0]["raw_model_output"] == failed_proof
     assert record["attempts"][1]["raw_model_output"] == "by\n  trivial"
     assert any("attempt 1/4 | generating..." in message for message in progress)
     assert any("attempt 1/4 | REJECTED" in message for message in progress)
@@ -138,11 +139,36 @@ def test_generation_error_is_recorded_and_next_attempt_remains_independent(tmp_p
     assert record["verifier_calls"] == 1
 
 
+def test_output_format_failure_skips_lean_and_next_attempt_remains_independent(
+    tmp_path: Path,
+) -> None:
+    statement = "example : True"
+    model = FakeModel([generation("not a proof"), generation("by\n  trivial")])
+    verifier = FakeVerifier([VerificationStatus.VERIFIED])
+    output_path = tmp_path / "format_error.jsonl"
+
+    run_retry(
+        [TheoremTask("format-error", statement)],
+        model,
+        verifier,
+        output_path,
+        model_alias="mock",
+        max_attempts=2,
+    )
+    record = load_record(output_path)
+
+    assert model.calls == [statement, statement]
+    assert verifier.calls == [(statement, "by\n  trivial")]
+    assert record["attempts"][0]["normalized_proof"] == ""
+    assert record["attempts"][0]["error"].startswith("generation_error: ProofGenerationError")
+    assert record["attempts"][1]["verification_status"] == "verified"
+
+
 def test_result_and_summary_preserve_token_availability(tmp_path: Path) -> None:
     statement = "example : True"
     model = FakeModel(
         [
-            generation("bad", prompt_tokens=10, completion_tokens=2),
+            generation("by\n  exact nonexistent_theorem", prompt_tokens=10, completion_tokens=2),
             generation("by\n  trivial", prompt_tokens=None, completion_tokens=3),
         ]
     )
@@ -156,11 +182,17 @@ def test_result_and_summary_preserve_token_availability(tmp_path: Path) -> None:
         output_path,
         model_alias="configured_alias",
         max_attempts=2,
+        dataset="data/retry.jsonl",
+        generation_timeout_seconds=450,
+        verification_timeout_seconds=75,
     )
     record = load_record(output_path)
 
     assert record["model_alias"] == "configured_alias"
     assert record["model"] == "provider-model"
+    assert record["dataset"] == "data/retry.jsonl"
+    assert record["generation_timeout_seconds"] == 450
+    assert record["verification_timeout_seconds"] == 75
     assert record["prompt_tokens"] is None
     assert record["completion_tokens"] == 5
     assert summary.total_prompt_tokens == 10
@@ -182,7 +214,8 @@ def test_default_path_and_cli_default_identify_retry_budget(tmp_path: Path) -> N
     assert path.parent == tmp_path
     assert path.name.startswith("retry_smoke_minimax_k4_")
     assert path.suffix == ".jsonl"
-    assert args.max_attempts == DEFAULT_MAX_ATTEMPTS
+    assert args.max_attempts is None
+    assert DEFAULT_MAX_ATTEMPTS == 4
     assert DEFAULT_RESULTS_DIRECTORY == PROJECT_ROOT / "artifacts" / "retry" / "results"
 
 

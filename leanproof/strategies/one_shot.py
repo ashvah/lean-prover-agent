@@ -6,13 +6,13 @@ import json
 import re
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
 from leanproof.lean import LeanResult, VerificationStatus
-from leanproof.models import GenerationResult, ProofModel, normalize_proof
+from leanproof.models import GenerationResult, ProofGenerationError, ProofModel, normalize_proof
 
 
 class DatasetError(ValueError):
@@ -30,11 +30,46 @@ ProgressCallback = Callable[[str], None]
 
 
 @dataclass(frozen=True)
+class TaskDifficulty:
+    """Dataset-relative difficulty snapshot carried without entering model input."""
+
+    score: float
+    bucket: str
+    method: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {"score": self.score, "bucket": self.bucket, "method": self.method}
+
+
+@dataclass(frozen=True)
+class TaskMetadata:
+    """Small answer-free analysis snapshot associated with one theorem task."""
+
+    source: str | None = None
+    source_id: str | None = None
+    difficulty: TaskDifficulty | None = None
+    reference_tactic_count: int | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        metadata: dict[str, object] = {}
+        if self.source is not None:
+            metadata["source"] = self.source
+        if self.source_id is not None:
+            metadata["source_id"] = self.source_id
+        if self.difficulty is not None:
+            metadata["difficulty"] = self.difficulty.to_dict()
+        if self.reference_tactic_count is not None:
+            metadata["reference_tactic_count"] = self.reference_tactic_count
+        return metadata
+
+
+@dataclass(frozen=True)
 class TheoremTask:
-    """One theorem loaded from a JSONL dataset."""
+    """One theorem and its result-only analysis metadata loaded from JSONL."""
 
     theorem_id: str
     statement: str
+    metadata: TaskMetadata = field(default_factory=TaskMetadata)
 
 
 @dataclass(frozen=True)
@@ -43,8 +78,14 @@ class OneShotResult:
 
     theorem_id: str
     statement: str
+    task_metadata: dict[str, object]
+    strategy: str
+    generation_budget: int
+    dataset: str | None
     model_alias: str
     model: str
+    generation_timeout_seconds: float | None
+    verification_timeout_seconds: float | None
     raw_model_output: str
     reasoning_output: str | None
     proof_output: str
@@ -116,11 +157,64 @@ def load_dataset(dataset_path: str | Path, *, limit: int | None = None) -> list[
                 raise DatasetError(f"Duplicate theorem_id at {path}:{line_number}: {theorem_id}")
 
             seen_ids.add(theorem_id)
-            tasks.append(TheoremTask(theorem_id=theorem_id, statement=statement.strip()))
+            tasks.append(
+                TheoremTask(
+                    theorem_id=theorem_id,
+                    statement=statement.strip(),
+                    metadata=_load_task_metadata(record, path, line_number),
+                )
+            )
 
     if not tasks:
         raise DatasetError(f"Dataset is empty: {path}")
     return tasks[:limit]
+
+
+def _load_task_metadata(record: dict[str, object], path: Path, line_number: int) -> TaskMetadata:
+    source = _optional_metadata_string(record.get("source"), "source", path, line_number)
+    source_id = _optional_metadata_string(record.get("source_id"), "source_id", path, line_number)
+    difficulty_value = record.get("difficulty")
+    difficulty: TaskDifficulty | None = None
+    if difficulty_value is not None:
+        if not isinstance(difficulty_value, dict):
+            raise DatasetError(f"Invalid difficulty at {path}:{line_number}")
+        score = difficulty_value.get("score")
+        bucket = difficulty_value.get("bucket")
+        method = difficulty_value.get("method")
+        if (
+            not isinstance(score, (int, float))
+            or isinstance(score, bool)
+            or not isinstance(bucket, str)
+            or not bucket.strip()
+            or not isinstance(method, str)
+            or not method.strip()
+        ):
+            raise DatasetError(f"Invalid difficulty at {path}:{line_number}")
+        difficulty = TaskDifficulty(float(score), bucket.strip(), method.strip())
+
+    reference_tactic_count: int | None = None
+    features = record.get("features")
+    if isinstance(features, dict) and "reference_tactic_count" in features:
+        count = features.get("reference_tactic_count")
+        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+            raise DatasetError(f"Invalid reference_tactic_count at {path}:{line_number}")
+        reference_tactic_count = count
+    return TaskMetadata(
+        source=source,
+        source_id=source_id,
+        difficulty=difficulty,
+        reference_tactic_count=reference_tactic_count,
+    )
+
+
+def _optional_metadata_string(
+    value: object, field_name: str, path: Path, line_number: int
+) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise DatasetError(f"Invalid {field_name} at {path}:{line_number}")
+    return value.strip()
 
 
 def default_output_path(
@@ -142,6 +236,9 @@ def run_one_shot(
     output_path: str | Path,
     *,
     model_alias: str,
+    dataset: str | None = None,
+    generation_timeout_seconds: float | None = None,
+    verification_timeout_seconds: float | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> OneShotSummary:
     """Generate and verify each theorem once, recording failures without retrying."""
@@ -161,6 +258,9 @@ def run_one_shot(
                 model,
                 verifier,
                 model_alias=model_alias,
+                dataset=dataset,
+                generation_timeout_seconds=generation_timeout_seconds,
+                verification_timeout_seconds=verification_timeout_seconds,
                 index=index,
                 total=len(tasks),
                 progress_callback=progress_callback,
@@ -195,6 +295,9 @@ def _run_task_once(
     verifier: ProofVerifier,
     *,
     model_alias: str,
+    dataset: str | None,
+    generation_timeout_seconds: float | None,
+    verification_timeout_seconds: float | None,
     index: int,
     total: int,
     progress_callback: ProgressCallback | None,
@@ -216,8 +319,14 @@ def _run_task_once(
         return OneShotResult(
             theorem_id=task.theorem_id,
             statement=task.statement,
+            task_metadata=task.metadata.to_dict(),
+            strategy="one_shot",
+            generation_budget=1,
+            dataset=dataset,
             model_alias=model_alias,
             model=model.model_name,
+            generation_timeout_seconds=generation_timeout_seconds,
+            verification_timeout_seconds=verification_timeout_seconds,
             raw_model_output="",
             reasoning_output=None,
             proof_output="",
@@ -239,7 +348,25 @@ def _run_task_once(
         progress_callback,
         f"{progress_prefix} | generated   | {generation.latency_ms} ms",
     )
-    normalized_proof = normalize_proof(generation.proof_output)
+    try:
+        normalized_proof = normalize_proof(generation.proof_output)
+    except ProofGenerationError as error:
+        total_latency_ms = _elapsed_ms(started)
+        _report_progress(
+            progress_callback,
+            f"{progress_prefix} | ERROR       | output format | total {total_latency_ms} ms",
+        )
+        return _proof_format_failure_result(
+            task,
+            model,
+            generation,
+            model_alias,
+            dataset,
+            generation_timeout_seconds,
+            verification_timeout_seconds,
+            total_latency_ms,
+            error,
+        )
     _report_progress(progress_callback, f"{progress_prefix} | verifying...")
     verification_started = time.perf_counter()
     try:
@@ -258,6 +385,9 @@ def _run_task_once(
             generation,
             normalized_proof,
             model_alias,
+            dataset,
+            generation_timeout_seconds,
+            verification_timeout_seconds,
             total_latency_ms,
             verification_latency_ms,
             error,
@@ -274,8 +404,14 @@ def _run_task_once(
     return OneShotResult(
         theorem_id=task.theorem_id,
         statement=task.statement,
+        task_metadata=task.metadata.to_dict(),
+        strategy="one_shot",
+        generation_budget=1,
+        dataset=dataset,
         model_alias=model_alias,
         model=model.model_name,
+        generation_timeout_seconds=generation_timeout_seconds,
+        verification_timeout_seconds=verification_timeout_seconds,
         raw_model_output=generation.raw_output,
         reasoning_output=generation.reasoning_output,
         proof_output=generation.proof_output,
@@ -300,6 +436,9 @@ def _verification_exception_result(
     generation: GenerationResult,
     normalized_proof: str,
     model_alias: str,
+    dataset: str | None,
+    generation_timeout_seconds: float | None,
+    verification_timeout_seconds: float | None,
     total_latency_ms: int,
     verification_latency_ms: int,
     error: Exception,
@@ -307,8 +446,14 @@ def _verification_exception_result(
     return OneShotResult(
         theorem_id=task.theorem_id,
         statement=task.statement,
+        task_metadata=task.metadata.to_dict(),
+        strategy="one_shot",
+        generation_budget=1,
+        dataset=dataset,
         model_alias=model_alias,
         model=model.model_name,
+        generation_timeout_seconds=generation_timeout_seconds,
+        verification_timeout_seconds=verification_timeout_seconds,
         raw_model_output=generation.raw_output,
         reasoning_output=generation.reasoning_output,
         proof_output=generation.proof_output,
@@ -324,6 +469,46 @@ def _verification_exception_result(
         prompt_tokens=generation.prompt_tokens,
         completion_tokens=generation.completion_tokens,
         error=f"verification_error: {type(error).__name__}: {error}",
+    )
+
+
+def _proof_format_failure_result(
+    task: TheoremTask,
+    model: ProofModel,
+    generation: GenerationResult,
+    model_alias: str,
+    dataset: str | None,
+    generation_timeout_seconds: float | None,
+    verification_timeout_seconds: float | None,
+    total_latency_ms: int,
+    error: ProofGenerationError,
+) -> OneShotResult:
+    return OneShotResult(
+        theorem_id=task.theorem_id,
+        statement=task.statement,
+        task_metadata=task.metadata.to_dict(),
+        strategy="one_shot",
+        generation_budget=1,
+        dataset=dataset,
+        model_alias=model_alias,
+        model=model.model_name,
+        generation_timeout_seconds=generation_timeout_seconds,
+        verification_timeout_seconds=verification_timeout_seconds,
+        raw_model_output=generation.raw_output,
+        reasoning_output=generation.reasoning_output,
+        proof_output=generation.proof_output,
+        normalized_proof="",
+        verification_status=None,
+        verified=False,
+        has_sorry=False,
+        lean_stdout="",
+        lean_stderr="",
+        generation_latency_ms=generation.latency_ms,
+        verification_latency_ms=0,
+        total_latency_ms=total_latency_ms,
+        prompt_tokens=generation.prompt_tokens,
+        completion_tokens=generation.completion_tokens,
+        error=f"generation_error: {type(error).__name__}: {error}",
     )
 
 

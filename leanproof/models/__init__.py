@@ -1,6 +1,7 @@
 """Model configuration, provider integration, and proof generation."""
 
 from leanproof.models.model import (
+    DEFAULT_GENERATION_TIMEOUT_SECONDS,
     ConfigurationError,
     GenerationResult,
     LLMConfig,
@@ -13,6 +14,7 @@ from leanproof.models.model import (
 from leanproof.models.registry import ModelRegistry
 
 __all__ = [
+    "DEFAULT_GENERATION_TIMEOUT_SECONDS",
     "ConfigurationError",
     "GenerationResult",
     "LLMConfig",

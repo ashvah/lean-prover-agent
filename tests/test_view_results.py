@@ -109,6 +109,7 @@ def test_html_escapes_all_experiment_text() -> None:
     records[0]["lean_stdout"] = "<em>stdout</em>"
     records[0]["lean_stderr"] = "<strong>stderr</strong>"
     records[0]["error"] = "<script>runner error</script>"
+    records[0]["task_metadata"]["source"] = "<script>source</script>"
     summary = calculate_summary(records)
 
     document = build_html(records, summary, "unsafe.jsonl")
@@ -123,6 +124,7 @@ def test_html_escapes_all_experiment_text() -> None:
     assert "&lt;em&gt;stdout&lt;/em&gt;" in document
     assert "&lt;strong&gt;stderr&lt;/strong&gt;" in document
     assert "&lt;script&gt;runner error&lt;/script&gt;" in document
+    assert "&lt;script&gt;source&lt;/script&gt;" in document
 
 
 def test_html_renders_passed_failed_details_and_filters() -> None:
@@ -205,6 +207,46 @@ def test_all_missing_token_usage_remains_unavailable() -> None:
     assert summary.token_usage_available == 0
     assert "Total tokens</span><strong>unavailable" in document
     assert "Token usage available</span><strong>0 / 1 tasks" in document
+
+
+def test_difficulty_summary_and_task_metadata_render_from_stored_snapshot() -> None:
+    records = sample_records()
+
+    summary = calculate_summary(records)
+    document = build_html(records, summary, "difficulty.jsonl")
+
+    buckets = {item.bucket: item for item in summary.difficulty_buckets}
+    assert (buckets["easy"].total, buckets["easy"].solved) == (1, 1)
+    assert buckets["easy"].solve_rate == 100.0
+    assert (buckets["medium"].total, buckets["medium"].solved) == (2, 0)
+    assert buckets["medium"].solve_rate == 0.0
+    assert summary.unknown_difficulty == 1
+    assert "Solve rate by difficulty" in document
+    assert '<th scope="row">Easy</th><td>1</td><td>1</td><td>100.0%' in document
+    assert '<th scope="row">Medium</th><td>2</td><td>0</td><td>0.0%' in document
+    assert '<th scope="row">Unknown</th><td>1</td>' in document
+    assert "Source</dt><dd>lean_workbook" in document
+    assert "Difficulty bucket</dt><dd>easy" in document
+    assert "Difficulty score</dt><dd>0.2" in document
+    assert "Difficulty method</dt><dd>static_v1" in document
+    assert "Reference tactic count</dt><dd>3" in document
+
+
+def test_legacy_result_without_task_metadata_remains_viewable() -> None:
+    record = {
+        "theorem_id": "legacy",
+        "statement": "example : True",
+        "verified": True,
+        "normalized_proof": "by trivial",
+    }
+
+    summary = calculate_summary([record])
+    document = build_html([record], summary, "legacy.jsonl")
+
+    assert summary.difficulty_buckets == ()
+    assert summary.unknown_difficulty == 1
+    assert "UNKNOWN" not in document.split("Solve rate by difficulty", maxsplit=1)[0]
+    assert "Unknown</th><td>1</td>" in document
 
 
 def test_legacy_status_is_not_guessed_from_failed_proof_text() -> None:
@@ -392,6 +434,11 @@ def sample_retry_record() -> dict[str, object]:
     return {
         "theorem_id": "retry_theorem",
         "statement": "example : True",
+        "task_metadata": {
+            "source": "lean_workbook",
+            "source_id": "retry-source",
+            "difficulty": {"score": 0.8, "bucket": "hard", "method": "static_v1"},
+        },
         "strategy": "retry",
         "model_alias": "mock",
         "model": "mock-model",
@@ -451,6 +498,12 @@ def sample_records() -> list[dict[str, object]]:
         {
             "theorem_id": "passed_theorem",
             "statement": "example : True",
+            "task_metadata": {
+                "source": "lean_workbook",
+                "source_id": "source-passed",
+                "difficulty": {"score": 0.2, "bucket": "easy", "method": "static_v1"},
+                "reference_tactic_count": 3,
+            },
             "model_alias": "mock",
             "model": "mock-model",
             "raw_model_output": "```lean\nby\n  trivial\n```",
@@ -472,6 +525,11 @@ def sample_records() -> list[dict[str, object]]:
         {
             "theorem_id": "failed_theorem",
             "statement": "example : False",
+            "task_metadata": {
+                "source": "lean_workbook",
+                "source_id": "source-failed",
+                "difficulty": {"score": 0.5, "bucket": "medium", "method": "static_v1"},
+            },
             "model_alias": "mock",
             "model": "mock-model",
             "raw_model_output": "by\n  exact nonexistent_theorem",
@@ -514,6 +572,11 @@ def sample_records() -> list[dict[str, object]]:
         {
             "theorem_id": "incomplete_theorem",
             "statement": "example : False",
+            "task_metadata": {
+                "source": "lean_workbook",
+                "source_id": "source-incomplete",
+                "difficulty": {"score": 0.6, "bucket": "medium", "method": "static_v1"},
+            },
             "model_alias": "mock",
             "model": "mock-model",
             "raw_model_output": "<think>Use a placeholder.</think>\n\nby\n  sorry",

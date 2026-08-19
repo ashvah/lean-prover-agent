@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from leanproof.lean import VerificationStatus
-from leanproof.models import GenerationResult, ProofModel, normalize_proof
+from leanproof.models import GenerationResult, ProofGenerationError, ProofModel, normalize_proof
 from leanproof.strategies.one_shot import ProgressCallback, ProofVerifier, TheoremTask
 
 DEFAULT_MAX_ATTEMPTS = 4
@@ -46,10 +46,14 @@ class RetryResult:
 
     theorem_id: str
     statement: str
+    task_metadata: dict[str, object]
     strategy: str
+    dataset: str | None
     model_alias: str
     model: str
     generation_budget: int
+    generation_timeout_seconds: float | None
+    verification_timeout_seconds: float | None
     attempts: tuple[RetryAttempt, ...]
     final_verification_status: str | None
     solved: bool
@@ -123,6 +127,9 @@ def run_retry(
     *,
     model_alias: str,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    dataset: str | None = None,
+    generation_timeout_seconds: float | None = None,
+    verification_timeout_seconds: float | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> RetrySummary:
     """Run independent proof generations until VERIFIED or the budget is exhausted."""
@@ -142,6 +149,9 @@ def run_retry(
                 verifier,
                 model_alias=model_alias,
                 max_attempts=max_attempts,
+                dataset=dataset,
+                generation_timeout_seconds=generation_timeout_seconds,
+                verification_timeout_seconds=verification_timeout_seconds,
                 theorem_index=theorem_index,
                 total_theorems=len(tasks),
                 progress_callback=progress_callback,
@@ -160,6 +170,9 @@ def _run_theorem_retry(
     *,
     model_alias: str,
     max_attempts: int,
+    dataset: str | None,
+    generation_timeout_seconds: float | None,
+    verification_timeout_seconds: float | None,
     theorem_index: int,
     total_theorems: int,
     progress_callback: ProgressCallback | None,
@@ -209,7 +222,21 @@ def _run_theorem_retry(
             progress_callback,
             f"{prefix} | generated | {generation.latency_ms} ms",
         )
-        normalized_proof = normalize_proof(generation.proof_output)
+        try:
+            normalized_proof = normalize_proof(generation.proof_output)
+        except ProofGenerationError as error:
+            attempt = _proof_format_failure_attempt(
+                attempt_index,
+                generation,
+                _elapsed_ms(attempt_started),
+                error,
+            )
+            attempts.append(attempt)
+            _report_progress(
+                progress_callback,
+                f"{prefix} | ERROR | output format | total {attempt.total_attempt_latency_ms} ms",
+            )
+            continue
         _report_progress(progress_callback, f"{prefix} | verifying...")
         verification_started = time.perf_counter()
         verifier_calls += 1
@@ -264,10 +291,14 @@ def _run_theorem_retry(
     return RetryResult(
         theorem_id=task.theorem_id,
         statement=task.statement,
+        task_metadata=task.metadata.to_dict(),
         strategy=RETRY_STRATEGY,
+        dataset=dataset,
         model_alias=model_alias,
         model=model.model_name,
         generation_budget=max_attempts,
+        generation_timeout_seconds=generation_timeout_seconds,
+        verification_timeout_seconds=verification_timeout_seconds,
         attempts=attempt_tuple,
         final_verification_status=final_attempt.verification_status,
         solved=final_attempt.verified,
@@ -308,6 +339,32 @@ def _verification_exception_attempt(
         verification_latency_ms=verification_latency_ms,
         total_attempt_latency_ms=total_attempt_latency_ms,
         error=f"verification_error: {type(error).__name__}: {error}",
+    )
+
+
+def _proof_format_failure_attempt(
+    attempt_index: int,
+    generation: GenerationResult,
+    total_attempt_latency_ms: int,
+    error: ProofGenerationError,
+) -> RetryAttempt:
+    return RetryAttempt(
+        attempt_index=attempt_index,
+        raw_model_output=generation.raw_output,
+        reasoning_output=generation.reasoning_output,
+        proof_output=generation.proof_output,
+        normalized_proof="",
+        verification_status=None,
+        verified=False,
+        has_sorry=False,
+        lean_stdout="",
+        lean_stderr="",
+        prompt_tokens=generation.prompt_tokens,
+        completion_tokens=generation.completion_tokens,
+        generation_latency_ms=generation.latency_ms,
+        verification_latency_ms=0,
+        total_attempt_latency_ms=total_attempt_latency_ms,
+        error=f"generation_error: {type(error).__name__}: {error}",
     )
 
 

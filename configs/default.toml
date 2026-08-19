@@ -1,0 +1,65 @@
+[paths]
+raw_data = "data/raw"
+processed_data = "data/processed"
+splits = "data/splits"
+artifacts = "artifacts"
+
+[models.minimax]
+base_url = "https://models.sjtu.edu.cn/api/v1"
+model = "minimax"
+api_key_env = "MINIMAX_API_KEY"
+reasoning_split = true
+generation_timeout_seconds = 300
+
+[models.deepseek_r]
+base_url = "https://models.sjtu.edu.cn/api/v1"
+model = "deepseek-reasoner"
+api_key_env = "DEEPSEEK_R_API_KEY"
+reasoning_split = true
+generation_timeout_seconds = 300
+
+[models.deepseek_c]
+base_url = "https://models.sjtu.edu.cn/api/v1"
+model = "deepseek-chat"
+api_key_env = "DEEPSEEK_C_API_KEY"
+reasoning_split = false
+generation_timeout_seconds = 300
+
+[models.qwen]
+base_url = "https://models.sjtu.edu.cn/api/v1"
+model = "qwen"
+api_key_env = "QWEN_API_KEY"
+reasoning_split = false
+generation_timeout_seconds = 300
+
+[lean]
+verification_timeout_seconds = 120
+
+[prepare_dataset]
+source = "lean_workbook"
+source_file = "0000.parquet"
+
+[sample_dataset]
+source = "lean_workbook"
+source_file = "0000.jsonl"
+split = "development"
+bucket = "medium"
+size = 50
+seed = 42
+
+[inspect_dataset]
+source = "lean_workbook"
+source_file = "0000.jsonl"
+
+[run_one_shot]
+dataset = "data/smoke.jsonl"
+model = "minimax"
+limit = 0
+verbose = true
+
+[run_retry]
+dataset = "data/splits/development/0000_medium_50_seed42.jsonl"
+model = "minimax"
+max_attempts = 4
+limit = 0
+verbose = true

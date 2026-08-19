@@ -9,43 +9,89 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from leanproof.datasets import DatasetPipelineError, prepare_dataset
+from leanproof.config import DEFAULT_CONFIG_PATH, load_config
+from leanproof.datasets import DataPaths, DatasetPathError, DatasetPipelineError, prepare_dataset
 from leanproof.datasets.adapters import LeanWorkbookSchemaError
-from scripts._common import positive_integer
+from leanproof.models import ConfigurationError
+from scripts._common import positive_integer, resolve_project_path
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Prepare a local raw theorem dataset")
-    parser.add_argument("--source", required=True, choices=("lean_workbook",))
-    parser.add_argument("--input", required=True, help="Local Lean-Workbook Parquet path")
-    parser.add_argument("--output", required=True, help="Canonical output JSONL path")
-    parser.add_argument("--manifest", help="Manifest path; defaults beside the output JSONL")
-    parser.add_argument("--limit", type=positive_integer, help="Process only the first N raw rows")
+    parser.add_argument(
+        "--config",
+        default=str(PROJECT_ROOT / DEFAULT_CONFIG_PATH),
+        help="Runtime TOML path",
+    )
+    parser.add_argument("--source", choices=("lean_workbook",), help="Override source adapter")
+    parser.add_argument("--source-file", help="Override the configured raw filename")
+    parser.add_argument("--input", help="Explicit raw input path override")
+    parser.add_argument("--output", help="Explicit canonical JSONL path override")
+    parser.add_argument("--manifest", help="Explicit manifest path override")
+    parser.add_argument(
+        "--limit",
+        type=positive_integer,
+        help="Process only the first N theorem groups after complete source traversal",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_argument_parser().parse_args(argv)
-    output_path = Path(args.output)
-    manifest_path = Path(args.manifest) if args.manifest else output_path.parent / "manifest.json"
     try:
+        runtime = load_config(args.config)
+        workflow = runtime.prepare_dataset
+        source = args.source or workflow.source
+        source_file = args.source_file or workflow.source_file
+        data_paths = DataPaths.from_configured_roots(
+            PROJECT_ROOT,
+            raw_data=runtime.paths.raw_data,
+            processed_data=runtime.paths.processed_data,
+            splits=runtime.paths.splits,
+        )
+        input_path = (
+            resolve_project_path(PROJECT_ROOT, args.input)
+            if args.input
+            else data_paths.raw_dataset_path(source, source_file)
+        )
+        output_path = (
+            resolve_project_path(PROJECT_ROOT, args.output)
+            if args.output
+            else data_paths.processed_dataset_path(source, source_file)
+        )
+        manifest_path = (
+            resolve_project_path(PROJECT_ROOT, args.manifest)
+            if args.manifest
+            else data_paths.dataset_manifest_path(source, source_file)
+        )
         summary = prepare_dataset(
-            source=args.source,
-            input_path=args.input,
+            source=source,
+            input_path=input_path,
             output_path=output_path,
             manifest_path=manifest_path,
-            limit=args.limit,
+            limit=args.limit if args.limit is not None else workflow.limit,
         )
-    except (DatasetPipelineError, LeanWorkbookSchemaError, OSError, ValueError) as error:
+    except (
+        ConfigurationError,
+        DatasetPathError,
+        DatasetPipelineError,
+        LeanWorkbookSchemaError,
+        OSError,
+        ValueError,
+    ) as error:
         print(f"Error: {error}", file=sys.stderr)
         return 2
 
     print(f"Source: {summary.source}")
-    print(f"Raw records: {summary.raw_records}")
-    print(f"Valid mapped records: {summary.mapped_records}")
-    print(f"Invalid records dropped: {summary.invalid_records}")
-    print(f"Duplicates removed: {summary.duplicates_removed}")
-    print(f"Final records: {summary.final_records}")
+    print(f"Source tactic rows scanned: {summary.source_tactic_rows_scanned}")
+    print(f"Raw tactic rows selected: {summary.raw_tactic_rows}")
+    print(f"Theorem groups: {summary.theorem_groups}")
+    print(f"Reference trajectory steps: {summary.total_trajectory_steps}")
+    print(f"Proved theorems: {summary.proved_theorems}")
+    print(f"Disproved theorems: {summary.disproved_theorems}")
+    print(f"Invalid groups: {summary.invalid_groups}")
+    print(f"Duplicate theorems removed: {summary.duplicate_theorems}")
+    print(f"Final proving theorems: {summary.final_proving_theorems}")
     print("Difficulty:")
     for bucket in ("easy", "medium", "hard"):
         print(f"- {bucket}: {summary.bucket_counts[bucket]}")

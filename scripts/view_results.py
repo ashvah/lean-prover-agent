@@ -17,6 +17,19 @@ class ResultViewerError(ValueError):
 
 
 @dataclass(frozen=True)
+class DifficultyBucketSummary:
+    """Stored-task solve counts for one dataset difficulty bucket."""
+
+    bucket: str
+    total: int
+    solved: int
+
+    @property
+    def solve_rate(self) -> float:
+        return 100.0 * self.solved / self.total
+
+
+@dataclass(frozen=True)
 class ResultSummary:
     """Aggregate values displayed at the top of the result viewer."""
 
@@ -37,6 +50,8 @@ class ResultSummary:
     average_completion_tokens: float | None
     average_total_tokens: float | None
     token_usage_available: int
+    difficulty_buckets: tuple[DifficultyBucketSummary, ...]
+    unknown_difficulty: int
 
 
 @dataclass(frozen=True)
@@ -99,6 +114,17 @@ def calculate_summary(records: Sequence[dict[str, object]]) -> ResultSummary:
         for prompt, completion in zip(prompt_tokens, completion_tokens, strict=True)
         if prompt is not None and completion is not None
     ]
+    difficulty_buckets = tuple(
+        DifficultyBucketSummary(
+            bucket=bucket,
+            total=len(bucket_records),
+            solved=sum(_benchmark_verified(record) for record in bucket_records),
+        )
+        for bucket in ("easy", "medium", "hard")
+        if (
+            bucket_records := [record for record in records if _difficulty_bucket(record) == bucket]
+        )
+    )
     return ResultSummary(
         model_alias=model_alias,
         model=model,
@@ -117,6 +143,8 @@ def calculate_summary(records: Sequence[dict[str, object]]) -> ResultSummary:
         average_completion_tokens=_optional_average(available_completion_tokens),
         average_total_tokens=_optional_average(available_total_tokens),
         token_usage_available=len(available_total_tokens),
+        difficulty_buckets=difficulty_buckets,
+        unknown_difficulty=sum(_difficulty_bucket(record) is None for record in records),
     )
 
 
@@ -151,7 +179,8 @@ def build_html(
   <div><span>Avg completion tokens / available theorem</span><strong>{_format_optional_number(summary.average_completion_tokens)}</strong></div>
   <div><span>Avg total tokens / available theorem</span><strong>{_format_optional_number(summary.average_total_tokens)}</strong></div>
   <div><span>Token usage available</span><strong>{summary.token_usage_available} / {summary.total} tasks</strong></div>
-</section>""".strip()
+</section>
+{_render_difficulty_summary(summary)}""".strip()
     replacements = {
         "TITLE": _escape(f"Lean Prover Agent results — {source_name}"),
         "SOURCE": _escape(source_name),
@@ -281,6 +310,52 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def _render_difficulty_summary(summary: ResultSummary) -> str:
+    rows = [
+        (
+            f'<tr><th scope="row">{bucket.bucket.title()}</th>'
+            f"<td>{bucket.total}</td><td>{bucket.solved}</td>"
+            f"<td>{bucket.solve_rate:.1f}%</td></tr>"
+        )
+        for bucket in summary.difficulty_buckets
+    ]
+    if summary.unknown_difficulty:
+        rows.append(
+            f'<tr><th scope="row">Unknown</th><td>{summary.unknown_difficulty}</td>'
+            '<td colspan="2">not grouped</td></tr>'
+        )
+    return (
+        '<section class="difficulty-summary" aria-label="Solve rate by difficulty">'
+        "<h2>Solve rate by difficulty</h2>"
+        "<table><thead><tr><th>Difficulty</th><th>Total</th><th>Solved</th>"
+        f"<th>Solve rate</th></tr></thead><tbody>{''.join(rows)}</tbody></table></section>"
+    )
+
+
+def _render_task_metadata(record: dict[str, object]) -> str:
+    metadata = record.get("task_metadata")
+    if not isinstance(metadata, dict):
+        return ""
+    difficulty = metadata.get("difficulty")
+    difficulty_data = difficulty if isinstance(difficulty, dict) else {}
+    values = (
+        ("Source", metadata.get("source")),
+        ("Source ID", metadata.get("source_id")),
+        ("Difficulty bucket", difficulty_data.get("bucket")),
+        ("Difficulty score", difficulty_data.get("score")),
+        ("Difficulty method", difficulty_data.get("method")),
+        ("Reference tactic count", metadata.get("reference_tactic_count")),
+    )
+    rows = [
+        f"<div><dt>{label}</dt><dd>{_escape(value)}</dd></div>"
+        for label, value in values
+        if value is not None
+    ]
+    if not rows:
+        return ""
+    return f'<dl class="task-metadata">{"".join(rows)}</dl>'
+
+
 def _render_result_card(record: dict[str, object]) -> str:
     attempts = _retry_attempts(record)
     selected_record = attempts[-1] if attempts else record
@@ -322,6 +397,7 @@ def _render_result_card(record: dict[str, object]) -> str:
     )
     retry_metadata_html = _render_retry_metadata(record, attempts)
     attempts_html = _render_retry_attempts(attempts)
+    task_metadata_html = _render_task_metadata(record)
     return f"""
 <article class="result-card {benchmark_key}" data-status="{benchmark_key}" data-search="{_escape(search_text)}">
   <header>
@@ -331,6 +407,7 @@ def _render_result_card(record: dict[str, object]) -> str:
   <p class="verification-status">Verifier status: <strong class="verifier-{verification_key}">{_escape(verification_status)}</strong></p>
   <p class="benchmark-result">Benchmark result: <strong>{benchmark_status}</strong></p>
   {retry_metadata_html}
+  {task_metadata_html}
   <dl class="latencies">
     <div><dt>Generation</dt><dd>{_format_latency(record.get("generation_latency_ms"))} ms</dd></div>
     <div><dt>Verification</dt><dd>{_format_latency(record.get("verification_latency_ms"))} ms</dd></div>
@@ -541,6 +618,17 @@ def _record_total_tokens(record: dict[str, object]) -> int | None:
     return prompt + completion
 
 
+def _difficulty_bucket(record: dict[str, object]) -> str | None:
+    metadata = record.get("task_metadata")
+    if not isinstance(metadata, dict):
+        return None
+    difficulty = metadata.get("difficulty")
+    if not isinstance(difficulty, dict):
+        return None
+    bucket = difficulty.get("bucket")
+    return bucket if bucket in {"easy", "medium", "hard"} else None
+
+
 def _optional_sum(values: Sequence[int]) -> int | None:
     return sum(values) if values else None
 
@@ -660,9 +748,13 @@ _HTML_TEMPLATE = """<!doctype html>
     .verifier-incomplete { color: #ad6500; }
     .verifier-rejected, .verifier-timeout, .verifier-execution-error { color: #c9362b; }
     .verifier-unknown { color: #667085; }
-    .latencies, .tokens, .retry-metadata { display: flex; flex-wrap: wrap; gap: 1.25rem; margin: .8rem 0; }
-    .latencies div, .tokens div, .retry-metadata div { display: flex; gap: .35rem; }
-    .latencies dd, .tokens dd, .retry-metadata dd { margin: 0; }
+    .latencies, .tokens, .retry-metadata, .task-metadata { display: flex; flex-wrap: wrap; gap: 1.25rem; margin: .8rem 0; }
+    .latencies div, .tokens div, .retry-metadata div, .task-metadata div { display: flex; gap: .35rem; }
+    .latencies dd, .tokens dd, .retry-metadata dd, .task-metadata dd { margin: 0; }
+    .difficulty-summary { margin: 1.5rem 0; padding: 1rem; border: 1px solid #d8dee9; border-radius: .5rem; background: white; }
+    .difficulty-summary h2 { margin-top: 0; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: .55rem; border-bottom: 1px solid #d8dee9; text-align: left; }
     .retry-attempts { margin-top: 1rem; }
     .retry-attempt { margin-top: 1rem; padding: 1rem; border: 1px solid #d8dee9; border-radius: .45rem; }
     .retry-attempt h4 { margin-top: 0; }
@@ -684,7 +776,7 @@ _HTML_TEMPLATE = """<!doctype html>
     [hidden] { display: none !important; }
     @media (prefers-color-scheme: dark) {
       body { background: #111827; color: #e5e7eb; }
-      .summary div, button, .result-card, .token-chart { background: #1f2937; border-color: #4b5563; }
+      .summary div, button, .result-card, .token-chart, .difficulty-summary { background: #1f2937; border-color: #4b5563; }
       .source, .summary span, dt { color: #aeb7c5; }
     }
   </style>

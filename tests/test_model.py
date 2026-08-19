@@ -24,7 +24,11 @@ from leanproof.models.model import (
         ("  by\n  exact h\n", "by\n  exact h"),
         ("```lean\nby\n  exact h\n```", "by\n  exact h"),
         ("\n```Lean\nby\n  exact h\n```\n", "by\n  exact h"),
+        ("```Lean4\nby\n  exact h\n```", "by\n  exact h"),
+        ("```big\nby\n  exact h\n```", "by\n  exact h"),
+        ("```whatever\nby\n  exact h\n```", "by\n  exact h"),
         ("```\nby\n  exact h\n```", "by\n  exact h"),
+        ("Here is the proof:\n\n```lean\nby\n  exact h\n```", "by\n  exact h"),
     ],
 )
 def test_normalize_proof(raw_output: str, expected: str) -> None:
@@ -38,8 +42,60 @@ def test_baseline_prompt_is_fixed_and_contains_only_statement() -> None:
 
     assert prompt == BASELINE_PROMPT_TEMPLATE.format(statement=statement)
     assert prompt.endswith(statement)
+    assert "inserted directly after the theorem's `:=`" in prompt
+    assert "first non-whitespace token must be `by`" in prompt
+    assert "Markdown code fences" in prompt
+    assert "Do not repeat the theorem statement" in prompt
+    assert "Do not include explanations" in prompt
+    assert "Do not use `sorry` or `admit`" in prompt
+    assert "Lean 4" in prompt and "Mathlib" in prompt
     assert "previous" not in prompt.lower()
     assert "feedback" not in prompt.lower()
+    assert "repair" not in prompt.lower()
+
+
+def test_normalize_proof_preserves_observed_arbitrary_fence_payload_exactly() -> None:
+    raw_output = """```big
+by
+  use fun i => 1
+  intro k hk
+  simp [Finset.sum_const, Finset.card_range]
+  <;> field_simp
+  <;> ring
+```"""
+
+    assert (
+        normalize_proof(raw_output)
+        == """by
+  use fun i => 1
+  intro k hk
+  simp [Finset.sum_const, Finset.card_range]
+  <;> field_simp
+  <;> ring"""
+    )
+
+
+def test_normalize_proof_rejects_ambiguous_or_non_proof_output() -> None:
+    ambiguous = """```lean
+by
+  exact h
+```
+text
+```other
+by
+  assumption
+```"""
+
+    with pytest.raises(ProofGenerationError, match="multiple plausible"):
+        normalize_proof(ambiguous)
+    with pytest.raises(ProofGenerationError, match="does not contain"):
+        normalize_proof("I cannot solve this theorem.")
+
+
+def test_normalize_proof_does_not_repair_proof_contents() -> None:
+    proof = "by\n  exact nonexistent_theorem\n  )"
+
+    assert normalize_proof(proof) == proof
 
 
 def test_config_validates_and_normalizes_direct_values() -> None:
@@ -53,6 +109,7 @@ def test_config_validates_and_normalizes_direct_values() -> None:
     assert config.base_url == "https://file.example.com/v1"
     assert config.model == "file-model"
     assert config.reasoning_split is False
+    assert config.generation_timeout_seconds == 300.0
 
 
 def test_config_fails_fast_when_required_value_is_missing() -> None:
@@ -164,7 +221,7 @@ def test_default_client_disables_sdk_retries() -> None:
         api_key="test-key",
         base_url="https://api.example.com/v1",
         max_retries=0,
-        timeout=60.0,
+        timeout=300.0,
     )
 
 

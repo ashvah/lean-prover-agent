@@ -10,6 +10,7 @@ from pyarrow import parquet
 from leanproof.datasets import (
     CanonicalTheorem,
     DatasetPipelineError,
+    ReferenceTrajectoryStep,
     assign_static_difficulty,
     extract_features,
     load_canonical_records,
@@ -46,85 +47,146 @@ def test_lean_workbook_pipeline_maps_sanitizes_deduplicates_and_is_stable(
     records = load_canonical_records(first_output)
     manifest = json.loads(first_manifest.read_text(encoding="utf-8"))
 
-    assert first.raw_records == 6
-    assert first.mapped_records == 5
-    assert first.invalid_records == 1
-    assert first.duplicates_removed == 1
-    assert first.final_records == 4
-    assert first.invalid_reasons == {"formal_statement_blank": 1}
-    assert sum(first.bucket_counts.values()) == 4
+    assert first.source_tactic_rows_scanned == 9
+    assert first.raw_tactic_rows == 9
+    assert first.theorem_groups == 6
+    assert first.total_trajectory_steps == 9
+    assert first.proved_theorems == 4
+    assert first.disproved_theorems == 1
+    assert first.invalid_groups == 1
+    assert first.duplicate_theorems == 1
+    assert first.final_proving_theorems == 3
+    assert first.invalid_reasons == {"natural_language_statement_conflict": 1}
+    assert sum(first.bucket_counts.values()) == 3
     assert (
-        first.raw_records,
-        first.mapped_records,
-        first.invalid_records,
-        first.duplicates_removed,
-        first.final_records,
+        first.source_tactic_rows_scanned,
+        first.raw_tactic_rows,
+        first.theorem_groups,
+        first.total_trajectory_steps,
+        first.proved_theorems,
+        first.disproved_theorems,
+        first.invalid_groups,
+        first.duplicate_theorems,
+        first.final_proving_theorems,
         first.bucket_counts,
         first.invalid_reasons,
     ) == (
-        second.raw_records,
-        second.mapped_records,
-        second.invalid_records,
-        second.duplicates_removed,
-        second.final_records,
+        second.source_tactic_rows_scanned,
+        second.raw_tactic_rows,
+        second.theorem_groups,
+        second.total_trajectory_steps,
+        second.proved_theorems,
+        second.disproved_theorems,
+        second.invalid_groups,
+        second.duplicate_theorems,
+        second.final_proving_theorems,
         second.bucket_counts,
         second.invalid_reasons,
     )
     assert first_output.read_bytes() == second_output.read_bytes()
     assert first_manifest.read_bytes() == second_manifest.read_bytes()
-    assert records[0]["statement"] == "  theorem workbook_a : True"
-    assert records[0]["reference_proof"] == "exact True.intro"
+    assert records[0]["statement"] == "theorem workbook_a : True"
+    assert records[0]["source_status"] == "proved"
+    assert records[0]["reference_proof"] is None
+    assert records[0]["reference_trajectory"] == [
+        {
+            "step": 0,
+            "state_before": "⊢ True",
+            "tactic": "apply True.intro",
+            "state_after": "⊢ True",
+        },
+        {
+            "step": 1,
+            "state_before": "⊢ True",
+            "tactic": "exact True.intro",
+            "state_after": "no goals",
+        },
+        {
+            "step": 2,
+            "state_before": "no goals",
+            "tactic": "done",
+            "state_after": "no goals",
+        },
+    ]
     assert records[0]["metadata"]["source_formal_statement"].endswith(":= by sorry  ")
-    assert records[1]["reference_proof"] is None
     assert records[0]["metadata"]["category"] == "logic"
+    assert records[0]["features"]["reference_trajectory_steps"] == 3
+    assert records[0]["features"]["reference_tactic_count"] == 3
+    assert all(record["source_status"] == "proved" for record in records)
     assert manifest["lean_validation"] == {"performed": False}
     assert manifest["raw_input"] == "workbook.parquet"
     assert manifest["difficulty_method"] == "static_v1"
+    assert manifest["theorem_groups"] == 6
+    assert manifest["disproved_theorems"] == 1
+    assert manifest["duplicate_theorems"] == 1
 
 
 def test_lean_workbook_adapter_requires_formal_statement_column(tmp_path: Path) -> None:
     input_path = tmp_path / "missing.parquet"
-    parquet.write_table(arrow.Table.from_pylist([{"problem": "No formal column"}]), input_path)
-
-    with pytest.raises(LeanWorkbookSchemaError, match="formal statement column"):
-        LeanWorkbookAdapter(input_path)
-
-
-def test_adapter_ids_are_stable_and_missing_optional_proof_is_none(tmp_path: Path) -> None:
-    input_path = write_workbook_fixture(tmp_path / "workbook.parquet")
-
-    first_adapter = LeanWorkbookAdapter(input_path)
-    second_adapter = LeanWorkbookAdapter(input_path)
-    first = [first_adapter.map_row(row) for row in first_adapter.iter_rows(limit=2)]
-    second = [second_adapter.map_row(row) for row in second_adapter.iter_rows(limit=2)]
-
-    assert [record.id for record in first] == [record.id for record in second]
-    assert first[0].source_id == "source-a"
-    assert first[1].reference_proof is None
-
-
-def test_adapter_derives_stable_id_when_source_id_is_unavailable(tmp_path: Path) -> None:
-    input_path = tmp_path / "no-id.parquet"
     parquet.write_table(
         arrow.Table.from_pylist(
             [
                 {
-                    "natural_language_statement": "Show True.",
-                    "formal_statement": "theorem no_id : True := by sorry",
+                    "id": "missing-formal",
+                    "status": "proved",
+                    "tactic": "trivial",
+                    "state_before": "⊢ True",
+                    "state_after": "no goals",
                 }
             ]
         ),
         input_path,
     )
 
+    with pytest.raises(LeanWorkbookSchemaError, match="formal statement column"):
+        LeanWorkbookAdapter(input_path)
+
+
+def test_adapter_groups_ids_stably_and_preserves_trajectory_order(tmp_path: Path) -> None:
+    input_path = write_workbook_fixture(tmp_path / "workbook.parquet")
+
     first_adapter = LeanWorkbookAdapter(input_path)
     second_adapter = LeanWorkbookAdapter(input_path)
-    first = first_adapter.map_row(next(first_adapter.iter_rows()))
-    second = second_adapter.map_row(next(second_adapter.iter_rows()))
+    first_groups = first_adapter.load_groups().theorem_groups
+    second_groups = second_adapter.load_groups().theorem_groups
+    first = [first_adapter.map_group(group) for group in first_groups[:2]]
+    second = [second_adapter.map_group(group) for group in second_groups[:2]]
 
-    assert first.id == second.id
-    assert first.source_id == second.source_id
-    assert first.source_id.startswith("sha256:")
+    assert [record.id for record in first] == [record.id for record in second]
+    assert first[0].source_id == "source-a"
+    assert len(first[0].reference_trajectory) == 3
+    assert [step.tactic for step in first[0].reference_trajectory] == [
+        "apply True.intro",
+        "exact True.intro",
+        "done",
+    ]
+    assert first[0].reference_proof is None
+
+
+def test_adapter_accounts_for_missing_source_id(tmp_path: Path) -> None:
+    input_path = tmp_path / "no-id.parquet"
+    parquet.write_table(
+        arrow.Table.from_pylist(
+            [
+                {
+                    "id": None,
+                    "status": "proved",
+                    "natural_language_statement": "Show True.",
+                    "formal_statement": "theorem no_id : True := by sorry",
+                    "tactic": "trivial",
+                    "state_before": "⊢ True",
+                    "state_after": "no goals",
+                }
+            ]
+        ),
+        input_path,
+    )
+
+    grouped = LeanWorkbookAdapter(input_path).load_groups()
+
+    assert grouped.source_tactic_rows_scanned == 1
+    assert grouped.theorem_groups == ()
+    assert grouped.invalid_reasons == {"source_id_missing": 1}
 
 
 def test_feature_extraction_is_deterministic_non_negative_and_proof_optional() -> None:
@@ -145,23 +207,27 @@ def test_feature_extraction_is_deterministic_non_negative_and_proof_optional() -
     assert first["reference_proof_tokens"] is None
 
 
-def test_static_v1_is_deterministic_and_ignores_reference_proof_features() -> None:
-    without_proof = CanonicalTheorem(
+def test_static_v1_is_deterministic_and_ignores_reference_trajectory_features() -> None:
+    short_trajectory = CanonicalTheorem(
         id="a",
         source="test",
         source_id="a",
-        statement="theorem a : True",
+        statement="theorem same : True",
+        reference_trajectory=(ReferenceTrajectoryStep(0, "⊢ True", "trivial", "no goals"),),
     )
-    with_proof = CanonicalTheorem(
+    long_trajectory = CanonicalTheorem(
         id="b",
         source="test",
         source_id="b",
-        statement="theorem b : True",
-        reference_proof="by\n  trivial\n  trivial",
+        statement="theorem same : True",
+        reference_trajectory=(
+            ReferenceTrajectoryStep(0, "⊢ True", "apply True.intro", "⊢ True"),
+            ReferenceTrajectoryStep(1, "⊢ True", "trivial", "no goals"),
+        ),
     )
     records = [
         CanonicalTheorem(**{**record.__dict__, "features": extract_features(record)})
-        for record in (without_proof, with_proof)
+        for record in (short_trajectory, long_trajectory)
     ]
 
     first = assign_static_difficulty(records)
@@ -188,14 +254,14 @@ def test_sampling_is_seeded_without_replacement_and_preserves_canonical_records(
     )
     records = load_canonical_records(output_path)
 
-    first = sample_canonical_records(records, bucket="all", size=3, seed=42)
-    repeated = sample_canonical_records(records, bucket="all", size=3, seed=42)
-    different = sample_canonical_records(records, bucket="all", size=3, seed=7)
+    first = sample_canonical_records(records, bucket="all", size=2, seed=42)
+    repeated = sample_canonical_records(records, bucket="all", size=2, seed=42)
+    different = sample_canonical_records(records, bucket="all", size=2, seed=7)
 
     assert [record["id"] for record in first] == [record["id"] for record in repeated]
     assert [record["id"] for record in first] != [record["id"] for record in different]
-    assert len({record["id"] for record in first}) == 3
-    assert all("reference_proof" in record and "difficulty" in record for record in first)
+    assert len({record["id"] for record in first}) == 2
+    assert all("reference_trajectory" in record and "difficulty" in record for record in first)
     easy_count = sum(record["difficulty"]["bucket"] == "easy" for record in records)
     if easy_count:
         easy_sample = sample_canonical_records(records, bucket="easy", size=1, seed=1)
@@ -219,9 +285,18 @@ def test_canonical_extra_fields_do_not_leak_into_one_shot_or_retry_model_input(
                 "statement": statement,
                 "informal_statement": "SECRET INFORMAL",
                 "answer": "SECRET ANSWER",
+                "source_status": "proved",
+                "reference_trajectory": [
+                    {
+                        "step": 0,
+                        "state_before": "SECRET STATE BEFORE",
+                        "tactic": "SECRET TACTIC",
+                        "state_after": "SECRET STATE AFTER",
+                    }
+                ],
                 "reference_proof": "SECRET REFERENCE PROOF",
                 "metadata": {},
-                "features": {"statement_tokens": 3},
+                "features": {"statement_tokens": 3, "reference_tactic_count": 1},
                 "difficulty": {"score": 0.5, "bucket": "medium", "method": "static_v1"},
             },
             ensure_ascii=False,
@@ -233,7 +308,12 @@ def test_canonical_extra_fields_do_not_leak_into_one_shot_or_retry_model_input(
     one_shot_model = FakeModel([GenerationResult("by trivial", "by trivial", None, 1)])
     retry_model = FakeModel(
         [
-            GenerationResult("bad", "bad", None, 1),
+            GenerationResult(
+                "by exact nonexistent_theorem",
+                "by exact nonexistent_theorem",
+                None,
+                1,
+            ),
             GenerationResult("by trivial", "by trivial", None, 1),
         ]
     )
@@ -253,10 +333,25 @@ def test_canonical_extra_fields_do_not_leak_into_one_shot_or_retry_model_input(
         model_alias="mock",
         max_attempts=2,
     )
+    one_shot_record = json.loads((tmp_path / "one-shot.jsonl").read_text(encoding="utf-8"))
+    retry_record = json.loads((tmp_path / "retry.jsonl").read_text(encoding="utf-8"))
 
     assert tasks[0].theorem_id == "canonical-id"
+    assert tasks[0].metadata.to_dict() == {
+        "source": "lean_workbook",
+        "source_id": "source-id",
+        "difficulty": {"score": 0.5, "bucket": "medium", "method": "static_v1"},
+        "reference_tactic_count": 1,
+    }
     assert one_shot_model.calls == [statement]
     assert retry_model.calls == [statement, statement]
+    assert one_shot_record["task_metadata"] == tasks[0].metadata.to_dict()
+    assert retry_record["task_metadata"] == tasks[0].metadata.to_dict()
+    assert all("task_metadata" not in attempt for attempt in retry_record["attempts"])
+    serialized_results = json.dumps([one_shot_record, retry_record], ensure_ascii=False)
+    assert "SECRET INFORMAL" not in serialized_results
+    assert "SECRET ANSWER" not in serialized_results
+    assert "SECRET TACTIC" not in serialized_results
 
 
 def write_workbook_fixture(path: Path) -> Path:
@@ -266,66 +361,99 @@ def write_workbook_fixture(path: Path) -> Path:
             "status": "proved",
             "natural_language_statement": "Show True.",
             "answer": "true",
-            "formal_statement": "  theorem workbook_a : True := by sorry  ",
+            "formal_statement": "theorem workbook_a : True := by sorry  ",
+            "tactic": "apply True.intro",
+            "state_before": "⊢ True",
+            "state_after": "⊢ True",
+            "category": "logic",
+        },
+        {
+            "id": "source-a",
+            "status": "proved",
+            "natural_language_statement": "Show True.",
+            "answer": "true",
+            "formal_statement": "theorem workbook_a : True := by sorry  ",
             "tactic": "exact True.intro",
             "state_before": "⊢ True",
             "state_after": "no goals",
             "category": "logic",
         },
         {
+            "id": "source-a",
+            "status": "proved",
+            "natural_language_statement": "Show True.",
+            "answer": "true",
+            "formal_statement": "theorem workbook_a : True := by sorry  ",
+            "tactic": "done",
+            "state_before": "no goals",
+            "state_after": "no goals",
+            "category": "logic",
+        },
+        {
             "id": "source-b",
             "status": "proved",
-            "natural_language_statement": "Duplicate with whitespace.",
-            "answer": "true",
-            "formal_statement": "theorem   workbook_a :   True := by sorry",
-            "tactic": None,
-            "state_before": "⊢ True",
+            "natural_language_statement": None,
+            "answer": None,
+            "formal_statement": "theorem workbook_b : 1 = 1 := by sorry",
+            "tactic": "rfl",
+            "state_before": "⊢ 1 = 1",
             "state_after": "no goals",
             "category": None,
         },
         {
-            "id": "source-blank",
-            "status": "failed",
-            "natural_language_statement": "Invalid.",
-            "answer": None,
-            "formal_statement": "   ",
-            "tactic": None,
-            "state_before": None,
-            "state_after": None,
-            "category": "invalid",
-        },
-        {
             "id": "source-c",
-            "status": "proved",
-            "natural_language_statement": "Identity.",
-            "answer": None,
-            "formal_statement": "theorem workbook_c (n : Nat) : n = n := by sorry",
-            "tactic": None,
-            "state_before": "n : Nat\n⊢ n = n",
-            "state_after": None,
-            "category": "algebra",
+            "status": "disproved",
+            "natural_language_statement": "A disproved conjecture.",
+            "answer": "false",
+            "formal_statement": "theorem workbook_c : False := by sorry",
+            "tactic": "contradiction",
+            "state_before": "⊢ False",
+            "state_after": "⊢ False",
+            "category": "logic",
         },
         {
             "id": "source-d",
             "status": "proved",
-            "natural_language_statement": "Use a hypothesis.",
+            "natural_language_statement": "Duplicate theorem D.",
             "answer": None,
-            "formal_statement": "theorem workbook_d (p : Prop) (h : p) : p := by sorry",
-            "tactic": "exact h",
-            "state_before": "p : Prop\nh : p\n⊢ p",
+            "formal_statement": "theorem duplicated : 2 = 2 := by sorry",
+            "tactic": "rfl",
+            "state_before": "⊢ 2 = 2",
             "state_after": "no goals",
-            "category": "logic",
+            "category": "arithmetic",
         },
         {
             "id": "source-e",
             "status": "proved",
-            "natural_language_statement": "Quantifiers.",
+            "natural_language_statement": "Duplicate theorem E.",
             "answer": None,
-            "formal_statement": "theorem workbook_e : ∀ n : Nat, ∃ m : Nat, m ≥ n := by sorry",
-            "tactic": "intro n; exact ⟨n, le_rfl⟩",
-            "state_before": "⊢ ∀ n : Nat, ∃ m : Nat, m ≥ n",
+            "formal_statement": "theorem   duplicated :  2 = 2 := by sorry",
+            "tactic": "norm_num",
+            "state_before": "⊢ 2 = 2",
             "state_after": "no goals",
-            "category": "logic",
+            "category": "arithmetic",
+        },
+        {
+            "id": "source-conflict",
+            "status": "proved",
+            "natural_language_statement": "First wording.",
+            "answer": None,
+            "formal_statement": "theorem conflict : True := by sorry",
+            "tactic": "apply True.intro",
+            "state_before": "⊢ True",
+            "state_after": "⊢ True",
+            "category": "invalid",
+        },
+        {
+            "id": "source-conflict",
+            "status": "proved",
+            "natural_language_statement": "Conflicting wording.",
+            "answer": None,
+            "formal_statement": "theorem conflict : True := by sorry",
+            "tactic": "trivial",
+            "state_before": "⊢ True",
+            "state_after": "no goals",
+            "category": "invalid",
         },
     ]
     parquet.write_table(arrow.Table.from_pylist(rows), path)

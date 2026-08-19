@@ -13,6 +13,8 @@ FEATURE_NAMES = (
     "num_binders",
     "num_hypotheses",
     "logical_complexity",
+    "reference_trajectory_steps",
+    "reference_tactic_count",
     "reference_proof_chars",
     "reference_proof_lines",
     "reference_proof_tokens",
@@ -39,6 +41,7 @@ def extract_features(theorem: CanonicalTheorem) -> dict[str, int | None]:
 
     statement = theorem.statement
     proof = theorem.reference_proof
+    trajectory = theorem.reference_trajectory
     binders = _BINDER_PATTERN.findall(statement)
     hypothesis_names = _HYPOTHESIS_NAME_PATTERN.findall(statement)
     return {
@@ -48,6 +51,10 @@ def extract_features(theorem: CanonicalTheorem) -> dict[str, int | None]:
         "num_binders": len(binders),
         "num_hypotheses": sum(_looks_like_hypothesis(names) for names in hypothesis_names),
         "logical_complexity": sum(len(pattern.findall(statement)) for pattern in _LOGICAL_PATTERNS),
+        "reference_trajectory_steps": len(trajectory),
+        "reference_tactic_count": sum(
+            isinstance(step.tactic, str) and bool(step.tactic.strip()) for step in trajectory
+        ),
         "reference_proof_chars": len(proof) if proof is not None else None,
         "reference_proof_lines": len(proof.splitlines()) if proof is not None else None,
         "reference_proof_tokens": _token_count(proof) if proof is not None else None,

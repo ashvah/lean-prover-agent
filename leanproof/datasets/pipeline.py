@@ -13,7 +13,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from leanproof.datasets.adapters import LeanWorkbookAdapter, RowMappingError
+from leanproof.datasets.adapters import GroupMappingError, LeanWorkbookAdapter
 from leanproof.datasets.difficulty import DIFFICULTY_METHOD, assign_static_difficulty
 from leanproof.datasets.features import (
     DIFFICULTY_FEATURE_NAMES,
@@ -36,11 +36,15 @@ class PreparationSummary:
     """Actual record counts and output locations from one preparation run."""
 
     source: str
-    raw_records: int
-    mapped_records: int
-    invalid_records: int
-    duplicates_removed: int
-    final_records: int
+    source_tactic_rows_scanned: int
+    raw_tactic_rows: int
+    theorem_groups: int
+    total_trajectory_steps: int
+    proved_theorems: int
+    disproved_theorems: int
+    invalid_groups: int
+    duplicate_theorems: int
+    final_proving_theorems: int
     bucket_counts: dict[str, int]
     invalid_reasons: dict[str, int]
     output_path: Path
@@ -70,21 +74,31 @@ def prepare_dataset(
         raise DatasetPipelineError("Dataset output and manifest paths must be distinct")
 
     adapter = LeanWorkbookAdapter(input_file)
-    raw_records = 0
-    mapped_records = 0
-    invalid_reasons: Counter[str] = Counter()
-    duplicates_removed = 0
+    grouped_rows = adapter.load_groups(limit=limit)
+    invalid_reasons: Counter[str] = Counter(grouped_rows.invalid_reasons)
+    total_trajectory_steps = grouped_rows.raw_tactic_rows
+    proved_theorems = 0
+    disproved_theorems = 0
+    duplicate_theorems = 0
     seen_statement_keys: set[str] = set()
     seen_ids: dict[str, str] = {}
     canonical_records: list[CanonicalTheorem] = []
-    for raw_row in adapter.iter_rows(limit=limit):
-        raw_records += 1
+    for group in grouped_rows.theorem_groups:
         try:
-            theorem = adapter.map_row(raw_row)
-        except RowMappingError as error:
+            theorem = adapter.map_group(group)
+        except GroupMappingError as error:
             invalid_reasons[str(error)] += 1
             continue
-        mapped_records += 1
+        if not _is_json_serializable(theorem.to_dict()):
+            invalid_reasons["record_not_json_serializable"] += 1
+            continue
+        if theorem.source_status == "disproved":
+            disproved_theorems += 1
+            continue
+        if theorem.source_status != "proved":
+            invalid_reasons[f"unsupported_status:{theorem.source_status}"] += 1
+            continue
+        proved_theorems += 1
         previous_statement = seen_ids.get(theorem.id)
         if previous_statement is not None and previous_statement != theorem.statement:
             raise DatasetPipelineError(
@@ -92,11 +106,7 @@ def prepare_dataset(
             )
         statement_key = _statement_dedup_key(theorem.statement)
         if statement_key in seen_statement_keys:
-            duplicates_removed += 1
-            continue
-        if not _is_json_serializable(theorem.to_dict()):
-            invalid_reasons["record_not_json_serializable"] += 1
-            mapped_records -= 1
+            duplicate_theorems += 1
             continue
         seen_ids[theorem.id] = theorem.statement
         seen_statement_keys.add(statement_key)
@@ -112,21 +122,28 @@ def prepare_dataset(
         "pipeline_version": PIPELINE_VERSION,
         "source": source,
         "raw_input": input_file.name,
-        "raw_records": raw_records,
-        "mapped_records": mapped_records,
-        "invalid_records": sum(invalid_reasons.values()),
+        "source_tactic_rows_scanned": grouped_rows.source_tactic_rows_scanned,
+        "raw_tactic_rows": grouped_rows.raw_tactic_rows,
+        "theorem_groups": len(grouped_rows.theorem_groups),
+        "total_trajectory_steps": total_trajectory_steps,
+        "proved_theorems": proved_theorems,
+        "disproved_theorems": disproved_theorems,
+        "status_eligibility": {"proved": "included", "disproved": "excluded"},
+        "invalid_groups": sum(invalid_reasons.values()),
         "invalid_reasons": dict(sorted(invalid_reasons.items())),
-        "duplicates_removed": duplicates_removed,
-        "final_records": len(scored_records),
+        "duplicate_theorems": duplicate_theorems,
+        "final_proving_theorems": len(scored_records),
         "difficulty_method": DIFFICULTY_METHOD,
         "difficulty_buckets": bucket_counts,
         "feature_names": list(FEATURE_NAMES),
         "lean_validation": {"performed": False},
         "deterministic_configuration": {
             "limit": limit,
-            "source_order": "parquet_row_order",
+            "limit_unit": "theorem_groups_after_complete_source_traversal",
+            "trajectory_order": "explicit_step_column_or_parquet_row_order",
             "deduplication": "sha256_of_line_normalized_stripped_collapsed_whitespace",
-            "duplicate_survivor": "first_source_occurrence",
+            "duplicate_survivor": "first_eligible_theorem_group_in_source_order",
+            "eligible_source_status": "proved",
             "difficulty_features": list(DIFFICULTY_FEATURE_NAMES),
             "difficulty_formula": "equal_weight_mean_of_midrank_percentiles",
             "bucket_thresholds": {"easy_max_exclusive": 1 / 3, "hard_min_inclusive": 2 / 3},
@@ -135,11 +152,15 @@ def prepare_dataset(
     _write_json(manifest_file, manifest)
     return PreparationSummary(
         source=source,
-        raw_records=raw_records,
-        mapped_records=mapped_records,
-        invalid_records=sum(invalid_reasons.values()),
-        duplicates_removed=duplicates_removed,
-        final_records=len(scored_records),
+        source_tactic_rows_scanned=grouped_rows.source_tactic_rows_scanned,
+        raw_tactic_rows=grouped_rows.raw_tactic_rows,
+        theorem_groups=len(grouped_rows.theorem_groups),
+        total_trajectory_steps=total_trajectory_steps,
+        proved_theorems=proved_theorems,
+        disproved_theorems=disproved_theorems,
+        invalid_groups=sum(invalid_reasons.values()),
+        duplicate_theorems=duplicate_theorems,
+        final_proving_theorems=len(scored_records),
         bucket_counts=bucket_counts,
         invalid_reasons=dict(sorted(invalid_reasons.items())),
         output_path=output_file,
@@ -205,19 +226,24 @@ def summarize_canonical_records(records: Sequence[dict[str, object]]) -> dict[st
     if not records:
         raise DatasetPipelineError("Cannot inspect an empty canonical dataset")
     sources = sorted({str(record.get("source", "unknown")) for record in records})
-    reference_proofs = sum(
-        isinstance(record.get("reference_proof"), str) and bool(record["reference_proof"])
-        for record in records
+    source_statuses = Counter(str(record.get("source_status", "unknown")) for record in records)
+    trajectories = [record.get("reference_trajectory") for record in records]
+    trajectory_records = sum(
+        isinstance(trajectory, list) and bool(trajectory) for trajectory in trajectories
     )
     return {
         "source": ", ".join(sources),
         "records": len(records),
         "difficulty_buckets": _bucket_counts(records),
+        "source_statuses": dict(sorted(source_statuses.items())),
         "statement_tokens": _numeric_summary(_feature_values(records, "statement_tokens")),
         "num_binders": _numeric_summary(_feature_values(records, "num_binders")),
         "num_hypotheses": _numeric_summary(_feature_values(records, "num_hypotheses")),
-        "reference_proofs": reference_proofs,
-        "reference_proof_percentage": 100.0 * reference_proofs / len(records),
+        "reference_trajectories": trajectory_records,
+        "reference_trajectory_percentage": 100.0 * trajectory_records / len(records),
+        "reference_tactic_count": _numeric_summary(
+            _feature_values(records, "reference_tactic_count")
+        ),
     }
 
 

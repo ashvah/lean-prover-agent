@@ -90,6 +90,9 @@ def test_runner_records_raw_and_normalized_output_and_continues(tmp_path) -> Non
         verifier,
         output_path,
         model_alias="mock",
+        dataset="data/test.jsonl",
+        generation_timeout_seconds=600,
+        verification_timeout_seconds=90,
         progress_callback=progress_messages.append,
     )
     physical_lines = output_path.read_text(encoding="utf-8").splitlines()
@@ -97,11 +100,17 @@ def test_runner_records_raw_and_normalized_output_and_continues(tmp_path) -> Non
 
     assert model.calls == [task.statement for task in tasks]
     assert len(physical_lines) == 3
-    assert len(verifier.calls) == 2
+    assert len(verifier.calls) == 1
     assert summary.solved == 1
     assert summary.total == 3
     assert all(record["model_alias"] == "mock" for record in records)
     assert all(record["model"] == "mock-model" for record in records)
+    assert all(record["strategy"] == "one_shot" for record in records)
+    assert all(record["generation_budget"] == 1 for record in records)
+    assert all(record["dataset"] == "data/test.jsonl" for record in records)
+    assert all(record["generation_timeout_seconds"] == 600 for record in records)
+    assert all(record["verification_timeout_seconds"] == 90 for record in records)
+    assert all(record["task_metadata"] == {} for record in records)
     assert records[0]["raw_model_output"].startswith("<think>reasoning</think>")
     assert records[0]["reasoning_output"] == "reasoning"
     assert records[0]["proof_output"] == "  ```lean\nby\n  exact h\n```  "
@@ -112,9 +121,11 @@ def test_runner_records_raw_and_normalized_output_and_continues(tmp_path) -> Non
     assert records[0]["prompt_tokens"] == 20
     assert records[0]["completion_tokens"] == 5
     assert records[1]["raw_model_output"] == "not a proof"
-    assert records[1]["normalized_proof"] == "not a proof"
-    assert records[1]["verification_status"] == "rejected"
+    assert records[1]["proof_output"] == "not a proof"
+    assert records[1]["normalized_proof"] == ""
+    assert records[1]["verification_status"] is None
     assert records[1]["verified"] is False
+    assert records[1]["error"].startswith("generation_error: ProofGenerationError")
     assert records[2]["raw_model_output"] == ""
     assert records[2]["proof_output"] == ""
     assert records[2]["reasoning_output"] is None
@@ -124,9 +135,9 @@ def test_runner_records_raw_and_normalized_output_and_continues(tmp_path) -> Non
     assert progress_messages[1] == "[1/3] valid | generated   | 11 ms"
     assert progress_messages[2] == "[1/3] valid | verifying..."
     assert progress_messages[3].startswith("[1/3] valid | PASS")
-    assert progress_messages[7].startswith("[2/3] malformed | FAIL")
-    assert progress_messages[8] == "[3/3] api-error | generating..."
-    assert progress_messages[9].startswith("[3/3] api-error | ERROR")
+    assert progress_messages[6].startswith("[2/3] malformed | ERROR")
+    assert progress_messages[7] == "[3/3] api-error | generating..."
+    assert progress_messages[8].startswith("[3/3] api-error | ERROR")
     assert all("exact h" not in message for message in progress_messages)
 
 
@@ -179,26 +190,18 @@ def test_list_models_does_not_require_dataset_or_model(capsys) -> None:
         }
     )
 
-    with patch("scripts.run_one_shot.ModelRegistry.from_env", return_value=registry):
+    with patch("scripts.run_one_shot.build_model_registry", return_value=registry):
         exit_code = run_cli(["--list-models"])
 
     assert exit_code == 0
     assert capsys.readouterr().out == "Registered models:\n- minimax\n- qwen\n"
 
 
-@pytest.mark.parametrize(
-    ("arguments", "missing_option"),
-    [
-        (["--dataset", "data/smoke.jsonl"], "--model"),
-        (["--model", "minimax"], "--dataset"),
-    ],
-)
-def test_normal_execution_requires_dataset_and_model(arguments, missing_option, capsys) -> None:
-    with pytest.raises(SystemExit) as captured:
-        run_cli(arguments)
+def test_dataset_and_model_cli_values_are_optional_overrides() -> None:
+    args = build_argument_parser().parse_args([])
 
-    assert captured.value.code == 2
-    assert missing_option in capsys.readouterr().err
+    assert args.dataset is None
+    assert args.model is None
 
 
 def test_incomplete_proof_is_serialized_but_not_counted_as_solved(tmp_path) -> None:
