@@ -60,7 +60,7 @@ def add_runtime_arguments(
     parser.add_argument(
         "--max-transport-retries",
         type=non_negative_integer,
-        help="Override additional provider requests allowed after transport failures",
+        help="Override additional provider requests allowed after retryable request failures",
     )
     if include_retry:
         parser.add_argument(
@@ -69,9 +69,29 @@ def add_runtime_arguments(
             help="Override the configured independent-generation budget",
         )
     parser.add_argument(
-        "--generation-timeout-seconds",
+        "--reasoning-mode",
+        choices=("prompted", "none"),
+        help="Override the Agent-visible plan/proof output contract",
+    )
+    parser.add_argument(
+        "--connect-timeout-seconds",
         type=positive_number,
-        help="Override the selected model API generation timeout",
+        help="Override the provider connection-establishment timeout",
+    )
+    parser.add_argument(
+        "--read-timeout-seconds",
+        type=positive_number,
+        help="Override the provider response-waiting timeout",
+    )
+    parser.add_argument(
+        "--write-timeout-seconds",
+        type=positive_number,
+        help="Override the provider request-write timeout",
+    )
+    parser.add_argument(
+        "--pool-timeout-seconds",
+        type=positive_number,
+        help="Override the provider connection-pool timeout",
     )
     parser.add_argument(
         "--verification-timeout-seconds",

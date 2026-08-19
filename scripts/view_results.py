@@ -372,16 +372,8 @@ def _render_result_card(record: dict[str, object]) -> str:
         if "proof_output" in selected_record
         else _text(selected_record.get("normalized_proof"))
     )
-    reasoning_output = _text(selected_record.get("reasoning_output"))
-    reasoning_html = (
-        f"""
-  <details>
-    <summary>Reasoning</summary>
-    <pre><code>{_escape(reasoning_output)}</code></pre>
-  </details>""".rstrip()
-        if reasoning_output
-        else ""
-    )
+    reasoning_html = _render_reasoning_sections(selected_record)
+    reasoning_mode = _text(record.get("reasoning_mode")) or "legacy / unavailable"
     runner_error_value = selected_record.get("error") or record.get("error")
     runner_error = _format_error(runner_error_value)
     runner_error_html = (
@@ -409,6 +401,7 @@ def _render_result_card(record: dict[str, object]) -> str:
   <p class="verification-status">Verifier status: <strong class="verifier-{verification_key}">{_escape(verification_status)}</strong></p>
   <p class="benchmark-result">Benchmark result: <strong>{benchmark_status}</strong></p>
   <p class="terminal-status">Terminal status: <strong>{_escape(record.get("terminal_status") or "legacy / unavailable")}</strong></p>
+  <p class="reasoning-mode">Reasoning mode: <strong>{_escape(reasoning_mode)}</strong></p>
   {retry_metadata_html}
   {task_metadata_html}
   <dl class="latencies">
@@ -457,6 +450,7 @@ def _render_retry_metadata(record: dict[str, object], attempts: Sequence[dict[st
     <div><dt>API requests</dt><dd>{_escape(record.get("api_requests"))}</dd></div>
     <div><dt>Request failures</dt><dd>{_escape(record.get("request_failures"))}</dd></div>
     <div><dt>Transport failures</dt><dd>{_escape(record.get("transport_failures"))}</dd></div>
+    <div><dt>Transient API failures</dt><dd>{_escape(record.get("transient_api_failures"))}</dd></div>
     <div><dt>Selected attempt</dt><dd>{len(attempts)}</dd></div>
   </dl>""".strip()
 
@@ -481,12 +475,7 @@ def _render_retry_attempt(attempt: dict[str, object]) -> str:
         if "proof_output" in attempt
         else _text(attempt.get("normalized_proof"))
     )
-    reasoning = _text(attempt.get("reasoning_output"))
-    reasoning_html = (
-        f"<details><summary>Reasoning</summary><pre><code>{_escape(reasoning)}</code></pre></details>"
-        if reasoning
-        else ""
-    )
+    reasoning_html = _render_reasoning_sections(attempt)
     prompt_tokens = _token_value(attempt.get("prompt_tokens"))
     completion_tokens = _token_value(attempt.get("completion_tokens"))
     total_tokens = (
@@ -516,6 +505,30 @@ def _render_retry_attempt(attempt: dict[str, object]) -> str:
       <details><summary>Raw model output</summary><pre><code>{_escape(attempt.get("raw_model_output"))}</code></pre></details>
       <details><summary>Lean diagnostics</summary><h5>stdout</h5><pre><code>{_escape(attempt.get("lean_stdout"))}</code></pre><h5>stderr</h5><pre><code>{_escape(attempt.get("lean_stderr"))}</code></pre><h5>runner error</h5><pre><code>{_escape(error)}</code></pre></details>
     </section>""".strip()
+
+
+def _render_reasoning_sections(record: dict[str, object]) -> str:
+    plan = _text(record.get("plan_output"))
+    native_reasoning = _text(record.get("native_reasoning_output"))
+    legacy_reasoning = (
+        _text(record.get("reasoning_output")) if "native_reasoning_output" not in record else ""
+    )
+    sections: list[str] = []
+    if plan:
+        sections.append(
+            f"<details><summary>Plan</summary><pre><code>{_escape(plan)}</code></pre></details>"
+        )
+    if native_reasoning:
+        sections.append(
+            "<details><summary>Provider reasoning (audit only)</summary>"
+            f"<pre><code>{_escape(native_reasoning)}</code></pre></details>"
+        )
+    if legacy_reasoning:
+        sections.append(
+            "<details><summary>Provider reasoning (legacy provenance)</summary>"
+            f"<pre><code>{_escape(legacy_reasoning)}</code></pre></details>"
+        )
+    return "\n".join(sections)
 
 
 def _render_request_attempts(record: dict[str, object]) -> str:
@@ -597,7 +610,9 @@ def _render_lean_record(record: dict[str, object]) -> list[str]:
         else []
     )
     if not normalized_proof and (
-        error or record.get("terminal_status") in {"generation_error", "transport_retry_exhausted"}
+        error
+        or record.get("terminal_status")
+        in {"generation_error", "transport_retry_exhausted", "request_retry_exhausted"}
     ):
         return [
             "/-",
@@ -704,7 +719,8 @@ def _verification_status_label(record: dict[str, object]) -> str:
     if status_field in record and (
         selected_record.get("error")
         or record.get("error")
-        or record.get("terminal_status") in {"generation_error", "transport_retry_exhausted"}
+        or record.get("terminal_status")
+        in {"generation_error", "transport_retry_exhausted", "request_retry_exhausted"}
     ):
         return "NOT RUN"
     if status_field not in record and record.get("verified") is True:

@@ -152,6 +152,76 @@ def test_one_shot_transport_retry_does_not_consume_generation_budget(tmp_path: P
     assert summary.total_generations == 1
 
 
+def test_transient_api_failure_uses_request_retry_without_consuming_generation(
+    tmp_path: Path,
+) -> None:
+    model = FakeModel(
+        [
+            transient_api_error(429, 21),
+            generation("by\n  trivial", latency_ms=8),
+        ]
+    )
+    output_path = tmp_path / "transient.jsonl"
+
+    summary = run_one_shot(
+        [TheoremTask("transient", "example : True")],
+        model,
+        FakeVerifier([VerificationStatus.VERIFIED]),
+        output_path,
+        model_alias="mock",
+        max_transport_retries=1,
+    )
+    record = load_record(output_path)
+
+    assert record["api_requests"] == 2
+    assert record["request_failures"] == 1
+    assert record["transport_failures"] == 0
+    assert record["transient_api_failures"] == 1
+    assert record["generations_used"] == 1
+    assert record["request_attempts"][0]["error"]["status_code"] == 429
+    assert summary.total_transient_api_failures == 1
+
+
+def test_transient_api_retry_exhaustion_has_zero_generations(tmp_path: Path) -> None:
+    output_path = tmp_path / "transient_exhausted.jsonl"
+
+    run_retry(
+        [TheoremTask("transient-exhausted", "example : True")],
+        FakeModel([transient_api_error(503, 11), transient_api_error(503, 12)]),
+        FakeVerifier([]),
+        output_path,
+        model_alias="mock",
+        max_attempts=2,
+        max_transport_retries=1,
+    )
+    record = load_record(output_path)
+
+    assert record["api_requests"] == 2
+    assert record["transient_api_failures"] == 2
+    assert record["generations_used"] == 0
+    assert record["terminal_status"] == "request_retry_exhausted"
+    assert record["error"]["status_code"] == 503
+
+
+def test_terminal_api_status_is_not_retried(tmp_path: Path) -> None:
+    output_path = tmp_path / "terminal_status.jsonl"
+
+    run_one_shot(
+        [TheoremTask("terminal", "example : True")],
+        FakeModel([terminal_api_error(401), generation("by\n  trivial")]),
+        FakeVerifier([]),
+        output_path,
+        model_alias="mock",
+        max_transport_retries=2,
+    )
+    record = load_record(output_path)
+
+    assert record["api_requests"] == 1
+    assert record["generations_used"] == 0
+    assert record["terminal_status"] == "generation_error"
+    assert record["error"]["status_code"] == 401
+
+
 def test_one_shot_transport_exhaustion_has_zero_generations(tmp_path: Path) -> None:
     output_path = tmp_path / "one_shot_transport_exhausted.jsonl"
     model = FakeModel(
@@ -196,7 +266,7 @@ def test_verification_exception_counts_generation_and_verifier_call(tmp_path: Pa
     assert record["verifier_calls"] == 1
     assert record["attempts"][0]["verification_status"] == "execution_error"
     assert record["attempts"][0]["error"]["stage"] == "verification"
-    assert record["terminal_status"] == "generation_budget_exhausted"
+    assert record["terminal_status"] == "verifier_execution_error"
 
 
 def test_unexpected_generation_error_is_terminal_and_does_not_consume_budget(
@@ -232,7 +302,7 @@ class FakeModel:
     def __init__(self, responses: list[GenerationResult | Exception]) -> None:
         self._responses = iter(responses)
 
-    def generate_proof(self, statement: str) -> GenerationResult:
+    def generate_proof(self, statement: str, *, reasoning_mode: str = "none") -> GenerationResult:
         response = next(self._responses)
         if isinstance(response, Exception):
             raise response
@@ -256,7 +326,7 @@ def generation(proof: str, *, latency_ms: int = 5) -> GenerationResult:
     return GenerationResult(
         raw_output=proof,
         proof_output=proof,
-        reasoning_output=None,
+        native_reasoning_output=None,
         latency_ms=latency_ms,
         prompt_tokens=10,
         completion_tokens=2,
@@ -274,6 +344,38 @@ def transport_error(error_type: str, cause_type: str, elapsed_ms: int) -> Genera
         retryable=True,
         transport=True,
         elapsed_ms=elapsed_ms,
+    )
+
+
+def transient_api_error(status_code: int, elapsed_ms: int) -> GenerationRequestError:
+    return GenerationRequestError(
+        ErrorDetails(
+            stage="generation_request",
+            type="APIStatusError",
+            cause_type=None,
+            message="transient provider response",
+            status_code=status_code,
+        ),
+        retryable=True,
+        transport=False,
+        transient_api=True,
+        elapsed_ms=elapsed_ms,
+    )
+
+
+def terminal_api_error(status_code: int) -> GenerationRequestError:
+    return GenerationRequestError(
+        ErrorDetails(
+            stage="generation_request",
+            type="APIStatusError",
+            cause_type=None,
+            message="terminal provider response",
+            status_code=status_code,
+        ),
+        retryable=False,
+        transport=False,
+        transient_api=False,
+        elapsed_ms=7,
     )
 
 

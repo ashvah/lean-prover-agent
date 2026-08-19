@@ -6,8 +6,11 @@ from pathlib import Path
 import pytest
 
 from leanproof.config import (
-    DEFAULT_GENERATION_TIMEOUT_SECONDS,
+    DEFAULT_CONNECT_TIMEOUT_SECONDS,
+    DEFAULT_POOL_TIMEOUT_SECONDS,
+    DEFAULT_READ_TIMEOUT_SECONDS,
     DEFAULT_VERIFICATION_TIMEOUT_SECONDS,
+    DEFAULT_WRITE_TIMEOUT_SECONDS,
     build_model_registry,
     load_config,
     resolve_experiment_config,
@@ -31,7 +34,10 @@ def test_default_toml_loads_models_and_separate_timeouts() -> None:
     assert config.paths.splits == "data/splits"
     assert config.paths.artifacts == "artifacts"
     assert tuple(config.models) == ("deepseek_c", "deepseek_r", "minimax", "qwen")
-    assert config.models["minimax"].generation_timeout_seconds == 300.0
+    assert config.models["minimax"].connect_timeout_seconds == 10.0
+    assert config.models["minimax"].read_timeout_seconds == 300.0
+    assert config.models["minimax"].write_timeout_seconds == 30.0
+    assert config.models["minimax"].pool_timeout_seconds == 10.0
     assert config.verification_timeout_seconds == 120.0
     assert (config.prepare_dataset.source, config.prepare_dataset.source_file) == (
         "lean_workbook",
@@ -56,6 +62,8 @@ def test_default_toml_loads_models_and_separate_timeouts() -> None:
     assert config.run_retry.limit is None
     assert config.run_one_shot.max_transport_retries == 2
     assert config.run_retry.max_transport_retries == 2
+    assert config.run_one_shot.reasoning_mode == "prompted"
+    assert config.run_retry.reasoning_mode == "prompted"
 
 
 @pytest.mark.parametrize("invalid_limit", [0, -1])
@@ -98,6 +106,29 @@ def test_experiment_cli_limit_is_positive_and_transport_retries_are_non_negative
         build_retry_parser().parse_args(["--max-transport-retries", "-1"])
 
 
+def test_experiment_cli_accepts_reasoning_mode_and_independent_http_timeouts() -> None:
+    args = build_retry_parser().parse_args(
+        [
+            "--reasoning-mode",
+            "none",
+            "--connect-timeout-seconds",
+            "11",
+            "--read-timeout-seconds",
+            "301",
+            "--write-timeout-seconds",
+            "31",
+            "--pool-timeout-seconds",
+            "12",
+        ]
+    )
+
+    assert args.reasoning_mode == "none"
+    assert args.connect_timeout_seconds == 11
+    assert args.read_timeout_seconds == 301
+    assert args.write_timeout_seconds == 31
+    assert args.pool_timeout_seconds == 12
+
+
 def test_malformed_toml_fails_clearly(tmp_path: Path) -> None:
     path = tmp_path / "bad.toml"
     path.write_text("[model\ndefault = 'broken'", encoding="utf-8")
@@ -122,18 +153,18 @@ def test_cli_overrides_toml_and_toml_overrides_built_in_fallback(tmp_path: Path)
         dataset_path="data/from_cli.jsonl",
         model_alias="alpha",
         retry_max_attempts=2,
-        generation_timeout_seconds=600,
+        read_timeout_seconds=600,
         verification_timeout_seconds=90,
         verbose=True,
     )
 
     assert from_toml.dataset_path == "data/from_retry_toml.jsonl"
     assert from_toml.retry_max_attempts == 3
-    assert from_toml.generation_timeout_seconds == 450.0
+    assert from_toml.read_timeout_seconds == 450.0
     assert from_toml.verification_timeout_seconds == 150.0
     assert from_cli.dataset_path == "data/from_cli.jsonl"
     assert from_cli.retry_max_attempts == 2
-    assert from_cli.generation_timeout_seconds == 600.0
+    assert from_cli.read_timeout_seconds == 600.0
     assert from_cli.verification_timeout_seconds == 90.0
     assert from_cli.verbose is True
 
@@ -142,18 +173,44 @@ def test_built_in_timeout_fallbacks_are_independent(tmp_path: Path) -> None:
     path = write_config(tmp_path / "fallback.toml", include_timeouts=False)
     config = load_config(path)
 
-    assert config.models["alpha"].generation_timeout_seconds == (DEFAULT_GENERATION_TIMEOUT_SECONDS)
+    assert config.models["alpha"].connect_timeout_seconds == DEFAULT_CONNECT_TIMEOUT_SECONDS
+    assert config.models["alpha"].read_timeout_seconds == DEFAULT_READ_TIMEOUT_SECONDS
+    assert config.models["alpha"].write_timeout_seconds == DEFAULT_WRITE_TIMEOUT_SECONDS
+    assert config.models["alpha"].pool_timeout_seconds == DEFAULT_POOL_TIMEOUT_SECONDS
     assert config.verification_timeout_seconds == DEFAULT_VERIFICATION_TIMEOUT_SECONDS
     generation_override = resolve_experiment_config(
-        config, workflow="run_one_shot", generation_timeout_seconds=700
+        config, workflow="run_one_shot", read_timeout_seconds=700
     )
     verification_override = resolve_experiment_config(
         config, workflow="run_one_shot", verification_timeout_seconds=30
     )
-    assert generation_override.generation_timeout_seconds == 700.0
+    assert generation_override.read_timeout_seconds == 700.0
     assert generation_override.verification_timeout_seconds == 120.0
-    assert verification_override.generation_timeout_seconds == 300.0
+    assert verification_override.read_timeout_seconds == 300.0
     assert verification_override.verification_timeout_seconds == 30.0
+
+
+def test_reasoning_mode_and_all_http_timeouts_resolve_independently(tmp_path: Path) -> None:
+    config = load_config(write_config(tmp_path / "resolved.toml"))
+
+    resolved = resolve_experiment_config(
+        config,
+        workflow="run_retry",
+        reasoning_mode="none",
+        connect_timeout_seconds=11,
+        read_timeout_seconds=302,
+        write_timeout_seconds=32,
+        pool_timeout_seconds=12,
+    )
+
+    assert resolved.reasoning_mode == "none"
+    assert resolved.connect_timeout_seconds == 11
+    assert resolved.read_timeout_seconds == 302
+    assert resolved.write_timeout_seconds == 32
+    assert resolved.pool_timeout_seconds == 12
+
+    with pytest.raises(ConfigurationError, match="reasoning_mode"):
+        resolve_experiment_config(config, workflow="run_retry", reasoning_mode="hidden")
 
 
 def test_workflows_keep_distinct_dataset_model_and_cli_defaults(tmp_path: Path) -> None:
@@ -246,7 +303,7 @@ def test_registry_resolves_named_secret_and_model_timeout_without_serializing_ke
     registry = build_model_registry(
         config,
         required_alias="alpha",
-        generation_timeout_seconds=525,
+        read_timeout_seconds=525,
         environ={"ALPHA_API_KEY": secret},
     )
     model_config = registry.get("alpha")
@@ -254,7 +311,7 @@ def test_registry_resolves_named_secret_and_model_timeout_without_serializing_ke
     assert registry.names() == ("alpha",)
     assert model_config.api_key == secret
     assert model_config.api_key_env == "ALPHA_API_KEY"
-    assert model_config.generation_timeout_seconds == 525.0
+    assert model_config.read_timeout_seconds == 525.0
     assert secret not in json.dumps(config, default=lambda value: value.__dict__)
 
 
@@ -268,7 +325,7 @@ def test_missing_required_api_key_names_variable_without_exposing_secrets(tmp_pa
     assert "https://" not in str(captured.value)
 
 
-def test_model_client_receives_resolved_generation_timeout(tmp_path: Path, monkeypatch) -> None:
+def test_model_client_receives_resolved_http_timeouts(tmp_path: Path, monkeypatch) -> None:
     config = load_config(write_config(tmp_path / "runtime.toml", generation_timeout=480))
     registry = build_model_registry(
         config,
@@ -284,7 +341,11 @@ def test_model_client_receives_resolved_generation_timeout(tmp_path: Path, monke
     monkeypatch.setattr("leanproof.models.model.OpenAI", FakeOpenAI)
     OpenAICompatibleProofModel(registry.get("alpha"))
 
-    assert captured["timeout"] == 480.0
+    timeout = captured["timeout"]
+    assert timeout.connect == 10.0
+    assert timeout.read == 480.0
+    assert timeout.write == 30.0
+    assert timeout.pool == 10.0
     assert captured["max_retries"] == 0
 
 

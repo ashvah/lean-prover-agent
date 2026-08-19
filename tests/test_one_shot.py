@@ -66,15 +66,16 @@ def test_runner_records_raw_and_normalized_output_and_continues(tmp_path) -> Non
             GenerationResult(
                 raw_output="<think>reasoning</think>\n\n  ```lean\nby\n  exact h\n```  ",
                 proof_output="  ```lean\nby\n  exact h\n```  ",
-                reasoning_output="reasoning",
+                native_reasoning_output="reasoning",
                 latency_ms=11,
+                plan_output="Use the hypothesis.",
                 prompt_tokens=20,
                 completion_tokens=5,
             ),
             GenerationResult(
                 raw_output="not a proof",
                 proof_output="not a proof",
-                reasoning_output=None,
+                native_reasoning_output=None,
                 latency_ms=12,
             ),
             RuntimeError("provider unavailable"),
@@ -91,14 +92,18 @@ def test_runner_records_raw_and_normalized_output_and_continues(tmp_path) -> Non
         output_path,
         model_alias="mock",
         dataset="data/test.jsonl",
-        generation_timeout_seconds=600,
+        reasoning_mode="prompted",
+        connect_timeout_seconds=12,
+        read_timeout_seconds=600,
+        write_timeout_seconds=32,
+        pool_timeout_seconds=13,
         verification_timeout_seconds=90,
         progress_callback=progress_messages.append,
     )
     physical_lines = output_path.read_text(encoding="utf-8").splitlines()
     records = [json.loads(line) for line in physical_lines]
 
-    assert model.calls == [task.statement for task in tasks]
+    assert model.calls == [(task.statement, "prompted") for task in tasks]
     assert len(physical_lines) == 3
     assert len(verifier.calls) == 1
     assert summary.solved == 1
@@ -108,11 +113,16 @@ def test_runner_records_raw_and_normalized_output_and_continues(tmp_path) -> Non
     assert all(record["strategy"] == "one_shot" for record in records)
     assert all(record["generation_budget"] == 1 for record in records)
     assert all(record["dataset"] == "data/test.jsonl" for record in records)
-    assert all(record["generation_timeout_seconds"] == 600 for record in records)
+    assert all(record["reasoning_mode"] == "prompted" for record in records)
+    assert all(record["connect_timeout_seconds"] == 12 for record in records)
+    assert all(record["read_timeout_seconds"] == 600 for record in records)
+    assert all(record["write_timeout_seconds"] == 32 for record in records)
+    assert all(record["pool_timeout_seconds"] == 13 for record in records)
     assert all(record["verification_timeout_seconds"] == 90 for record in records)
     assert all(record["task_metadata"] == {} for record in records)
     assert records[0]["raw_model_output"].startswith("<think>reasoning</think>")
-    assert records[0]["reasoning_output"] == "reasoning"
+    assert records[0]["native_reasoning_output"] == "reasoning"
+    assert records[0]["plan_output"] == "Use the hypothesis."
     assert records[0]["proof_output"] == "  ```lean\nby\n  exact h\n```  "
     assert records[0]["normalized_proof"] == "by\n  exact h"
     assert records[0]["verification_status"] == "verified"
@@ -128,7 +138,8 @@ def test_runner_records_raw_and_normalized_output_and_continues(tmp_path) -> Non
     assert records[1]["error"]["stage"] == "normalization"
     assert records[2]["raw_model_output"] == ""
     assert records[2]["proof_output"] == ""
-    assert records[2]["reasoning_output"] is None
+    assert records[2]["native_reasoning_output"] is None
+    assert records[2]["plan_output"] is None
     assert records[2]["verification_status"] is None
     assert records[2]["error"]["type"] == "RuntimeError"
     assert progress_messages[0].endswith("request 1 | generating...")
@@ -217,7 +228,7 @@ def test_incomplete_proof_is_serialized_but_not_counted_as_solved(tmp_path) -> N
             GenerationResult(
                 raw_output="by\n  sorry",
                 proof_output="by\n  sorry",
-                reasoning_output=None,
+                native_reasoning_output=None,
                 latency_ms=4,
             )
         ]
@@ -260,8 +271,27 @@ def test_runner_continues_after_verifier_exception(tmp_path) -> None:
     assert len(verifier.calls) == 2
     assert records[0]["verified"] is False
     assert records[0]["error"]["stage"] == "verification"
+    assert records[0]["terminal_status"] == "verifier_execution_error"
     assert records[1]["verified"] is True
     assert summary.solved == 1
+
+
+def test_returned_execution_error_has_terminal_verifier_status(tmp_path) -> None:
+    output_path = tmp_path / "returned_execution_error.jsonl"
+
+    run_one_shot(
+        [TheoremTask("execution-error", "example : True")],
+        FakeModel([GenerationResult("by trivial", "by trivial", None, 1)]),
+        ExecutionErrorVerifier(),
+        output_path,
+        model_alias="mock",
+    )
+    record = json.loads(output_path.read_text(encoding="utf-8"))
+
+    assert record["verification_status"] == "execution_error"
+    assert record["terminal_status"] == "verifier_execution_error"
+    assert record["generations_used"] == 1
+    assert record["verifier_calls"] == 1
 
 
 class FakeModel:
@@ -269,10 +299,10 @@ class FakeModel:
 
     def __init__(self, responses: list[GenerationResult | Exception]) -> None:
         self.responses = iter(responses)
-        self.calls: list[str] = []
+        self.calls: list[tuple[str, str]] = []
 
-    def generate_proof(self, statement: str) -> GenerationResult:
-        self.calls.append(statement)
+    def generate_proof(self, statement: str, *, reasoning_mode: str = "none") -> GenerationResult:
+        self.calls.append((statement, reasoning_mode))
         response = next(self.responses)
         if isinstance(response, Exception):
             raise response
@@ -318,5 +348,15 @@ class IncompleteVerifier:
             status=VerificationStatus.INCOMPLETE,
             stdout='{"kind":"hasSorry","severity":"warning"}\n',
             stderr="",
+            elapsed_ms=2,
+        )
+
+
+class ExecutionErrorVerifier:
+    def verify(self, statement: str, proof: str) -> LeanResult:
+        return LeanResult(
+            status=VerificationStatus.EXECUTION_ERROR,
+            stdout="",
+            stderr="Lean could not start",
             elapsed_ms=2,
         )

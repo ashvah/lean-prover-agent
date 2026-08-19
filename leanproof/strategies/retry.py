@@ -18,6 +18,7 @@ from leanproof.models import (
     ProofModel,
     normalize_proof,
 )
+from leanproof.prompts import ReasoningMode
 from leanproof.strategies.common import (
     DEFAULT_MAX_TRANSPORT_RETRIES,
     ProgressCallback,
@@ -42,7 +43,8 @@ class RetryAttempt:
     attempt_index: int
     request_index: int
     raw_model_output: str
-    reasoning_output: str | None
+    native_reasoning_output: str | None
+    plan_output: str | None
     proof_output: str
     normalized_proof: str
     verification_status: str | None
@@ -70,7 +72,11 @@ class RetryResult:
     model_alias: str
     model: str
     generation_budget: int
-    generation_timeout_seconds: float | None
+    reasoning_mode: ReasoningMode
+    connect_timeout_seconds: float | None
+    read_timeout_seconds: float | None
+    write_timeout_seconds: float | None
+    pool_timeout_seconds: float | None
     verification_timeout_seconds: float | None
     max_transport_retries: int
     request_attempts: tuple[RequestAttempt, ...]
@@ -81,6 +87,7 @@ class RetryResult:
     api_requests: int
     request_failures: int
     transport_failures: int
+    transient_api_failures: int
     generations_used: int
     verifier_calls: int
     prompt_tokens: int | None
@@ -108,6 +115,7 @@ class RetrySummary:
     total_api_requests: int
     total_request_failures: int
     total_transport_failures: int
+    total_transient_api_failures: int
     total_generations: int
     total_verifier_calls: int
     average_generations_per_theorem: float
@@ -158,7 +166,11 @@ def run_retry(
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     max_transport_retries: int = DEFAULT_MAX_TRANSPORT_RETRIES,
     dataset: str | None = None,
-    generation_timeout_seconds: float | None = None,
+    reasoning_mode: ReasoningMode = "none",
+    connect_timeout_seconds: float | None = None,
+    read_timeout_seconds: float | None = None,
+    write_timeout_seconds: float | None = None,
+    pool_timeout_seconds: float | None = None,
     verification_timeout_seconds: float | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> RetrySummary:
@@ -183,7 +195,11 @@ def run_retry(
                 max_attempts=max_attempts,
                 max_transport_retries=max_transport_retries,
                 dataset=dataset,
-                generation_timeout_seconds=generation_timeout_seconds,
+                reasoning_mode=reasoning_mode,
+                connect_timeout_seconds=connect_timeout_seconds,
+                read_timeout_seconds=read_timeout_seconds,
+                write_timeout_seconds=write_timeout_seconds,
+                pool_timeout_seconds=pool_timeout_seconds,
                 verification_timeout_seconds=verification_timeout_seconds,
                 theorem_index=theorem_index,
                 total_theorems=len(tasks),
@@ -205,7 +221,11 @@ def _run_theorem_retry(
     max_attempts: int,
     max_transport_retries: int,
     dataset: str | None,
-    generation_timeout_seconds: float | None,
+    reasoning_mode: ReasoningMode,
+    connect_timeout_seconds: float | None,
+    read_timeout_seconds: float | None,
+    write_timeout_seconds: float | None,
+    pool_timeout_seconds: float | None,
     verification_timeout_seconds: float | None,
     theorem_index: int,
     total_theorems: int,
@@ -231,6 +251,7 @@ def _run_theorem_retry(
             target_generation_index=attempt_index,
             first_request_index=len(request_attempts) + 1,
             max_transport_retries=max_transport_retries,
+            reasoning_mode=reasoning_mode,
             progress_prefix=prefix,
             progress_callback=progress_callback,
         )
@@ -287,6 +308,8 @@ def _run_theorem_retry(
                 total_attempt_latency_ms=elapsed_since(attempt_started),
                 error=error_details("verification", error),
             )
+            terminal_status = "verifier_execution_error"
+            terminal_error = attempt.error
         else:
             attempt = _generation_attempt(
                 attempt_index,
@@ -302,6 +325,8 @@ def _run_theorem_retry(
                 total_attempt_latency_ms=elapsed_since(attempt_started),
                 error=None,
             )
+            if verification.status is VerificationStatus.EXECUTION_ERROR:
+                terminal_status = "verifier_execution_error"
         attempts.append(attempt)
         status = attempt.verification_status.upper() if attempt.verification_status else "NOT RUN"
         solved_suffix = " | solved" if attempt.verified else ""
@@ -312,6 +337,8 @@ def _run_theorem_retry(
         )
         if attempt.verified:
             terminal_status = "verified"
+            break
+        if terminal_status == "verifier_execution_error":
             break
 
     if terminal_status is None:
@@ -331,7 +358,11 @@ def _run_theorem_retry(
         model_alias=model_alias,
         model=model.model_name,
         generation_budget=max_attempts,
-        generation_timeout_seconds=generation_timeout_seconds,
+        reasoning_mode=reasoning_mode,
+        connect_timeout_seconds=connect_timeout_seconds,
+        read_timeout_seconds=read_timeout_seconds,
+        write_timeout_seconds=write_timeout_seconds,
+        pool_timeout_seconds=pool_timeout_seconds,
         verification_timeout_seconds=verification_timeout_seconds,
         max_transport_retries=max_transport_retries,
         request_attempts=request_tuple,
@@ -342,6 +373,9 @@ def _run_theorem_retry(
         api_requests=len(request_tuple),
         request_failures=sum(request.status != "completed" for request in request_tuple),
         transport_failures=sum(request.status == "transport_failure" for request in request_tuple),
+        transient_api_failures=sum(
+            request.status == "transient_api_failure" for request in request_tuple
+        ),
         generations_used=len(attempt_tuple),
         verifier_calls=verifier_calls,
         prompt_tokens=_complete_token_sum(attempt.prompt_tokens for attempt in attempt_tuple),
@@ -374,7 +408,8 @@ def _generation_attempt(
         attempt_index=attempt_index,
         request_index=request_index,
         raw_model_output=generation.raw_output,
-        reasoning_output=generation.reasoning_output,
+        native_reasoning_output=generation.native_reasoning_output,
+        plan_output=generation.plan_output,
         proof_output=generation.proof_output,
         normalized_proof=normalized_proof,
         verification_status=verification_status,
@@ -425,6 +460,7 @@ def _summarize_results(
         total_api_requests=sum(result.api_requests for result in results),
         total_request_failures=sum(result.request_failures for result in results),
         total_transport_failures=sum(result.transport_failures for result in results),
+        total_transient_api_failures=sum(result.transient_api_failures for result in results),
         total_generations=len(attempts),
         total_verifier_calls=sum(result.verifier_calls for result in results),
         average_generations_per_theorem=len(attempts) / len(results),

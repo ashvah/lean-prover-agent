@@ -5,19 +5,19 @@ from unittest.mock import patch
 
 import httpx2
 import pytest
-from openai import APIConnectionError
+from openai import APIConnectionError, APIStatusError, Timeout
 
 from leanproof.models.model import (
-    BASELINE_PROMPT_TEMPLATE,
     ConfigurationError,
     GenerationRequestError,
     LLMConfig,
     OpenAICompatibleProofModel,
     ProofGenerationError,
-    build_baseline_prompt,
+    classify_request_failure,
     normalize_proof,
     split_leading_think_block,
 )
+from leanproof.prompts import build_baseline_prompt
 
 
 @pytest.mark.parametrize(
@@ -36,25 +36,6 @@ from leanproof.models.model import (
 )
 def test_normalize_proof(raw_output: str, expected: str) -> None:
     assert normalize_proof(raw_output) == expected
-
-
-def test_baseline_prompt_is_fixed_and_contains_only_statement() -> None:
-    statement = "example (p : Prop) (h : p) : p"
-
-    prompt = build_baseline_prompt(statement)
-
-    assert prompt == BASELINE_PROMPT_TEMPLATE.format(statement=statement)
-    assert prompt.endswith(statement)
-    assert "inserted directly after the theorem's `:=`" in prompt
-    assert "first non-whitespace token must be `by`" in prompt
-    assert "Markdown code fences" in prompt
-    assert "Do not repeat the theorem statement" in prompt
-    assert "Do not include explanations" in prompt
-    assert "Do not use `sorry` or `admit`" in prompt
-    assert "Lean 4" in prompt and "Mathlib" in prompt
-    assert "previous" not in prompt.lower()
-    assert "feedback" not in prompt.lower()
-    assert "repair" not in prompt.lower()
 
 
 def test_normalize_proof_preserves_observed_arbitrary_fence_payload_exactly() -> None:
@@ -112,7 +93,10 @@ def test_config_validates_and_normalizes_direct_values() -> None:
     assert config.base_url == "https://file.example.com/v1"
     assert config.model == "file-model"
     assert config.reasoning_split is False
-    assert config.generation_timeout_seconds == 300.0
+    assert config.connect_timeout_seconds == 10.0
+    assert config.read_timeout_seconds == 300.0
+    assert config.write_timeout_seconds == 30.0
+    assert config.pool_timeout_seconds == 10.0
 
 
 def test_config_fails_fast_when_required_value_is_missing() -> None:
@@ -136,7 +120,8 @@ def test_model_makes_one_request_and_preserves_raw_output() -> None:
 
     assert result.raw_output == "  ```lean\nby\n  exact h\n```  "
     assert result.proof_output == result.raw_output
-    assert result.reasoning_output is None
+    assert result.native_reasoning_output is None
+    assert result.plan_output is None
     assert normalize_proof(result.proof_output) == "by\n  exact h"
     assert result.prompt_tokens == 31
     assert result.completion_tokens == 7
@@ -181,7 +166,7 @@ def test_leading_think_block_is_split_without_changing_raw_output() -> None:
     result = OpenAICompatibleProofModel(config, client=client).generate_proof("example : True")
 
     assert result.raw_output == raw_output
-    assert result.reasoning_output == "reasoning text"
+    assert result.native_reasoning_output == "reasoning text"
     assert result.proof_output == "by\n  ring"
 
 
@@ -211,7 +196,27 @@ def test_dedicated_reasoning_details_are_preserved() -> None:
 
     assert result.raw_output == "by\n  ring"
     assert result.proof_output == "by\n  ring"
-    assert result.reasoning_output == "dedicated reasoning"
+    assert result.native_reasoning_output == "dedicated reasoning"
+
+
+def test_provider_reasoning_and_agent_visible_plan_remain_separate() -> None:
+    raw_output = (
+        "<think>native scratch work</think>"
+        "<plan>Apply ring normalization.</plan>"
+        "<proof>by\n  ring</proof>"
+    )
+    completions = FakeCompletions(raw_output)
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    config = LLMConfig("test-key", "https://api.example.com/v1", "test-model")
+
+    result = OpenAICompatibleProofModel(config, client=client).generate_proof(
+        "example (x : ℝ) : x = x", reasoning_mode="prompted"
+    )
+
+    assert result.raw_output == raw_output
+    assert result.native_reasoning_output == "native scratch work"
+    assert result.plan_output == "Apply ring normalization."
+    assert result.proof_output == "by\n  ring"
 
 
 def test_default_client_disables_sdk_retries() -> None:
@@ -220,12 +225,15 @@ def test_default_client_disables_sdk_retries() -> None:
     with patch("leanproof.models.model.OpenAI") as openai_class:
         OpenAICompatibleProofModel(config)
 
-    openai_class.assert_called_once_with(
-        api_key="test-key",
-        base_url="https://api.example.com/v1",
-        max_retries=0,
-        timeout=300.0,
-    )
+    call = openai_class.call_args.kwargs
+    assert call["api_key"] == "test-key"
+    assert call["base_url"] == "https://api.example.com/v1"
+    assert call["max_retries"] == 0
+    assert isinstance(call["timeout"], Timeout)
+    assert call["timeout"].connect == 10.0
+    assert call["timeout"].read == 300.0
+    assert call["timeout"].write == 30.0
+    assert call["timeout"].pool == 10.0
 
 
 def test_model_rejects_completion_without_text() -> None:
@@ -262,6 +270,33 @@ def test_model_wraps_transport_failure_with_low_level_cause() -> None:
     assert captured.value.details.type == "APIConnectionError"
     assert captured.value.details.cause_type == "ConnectTimeout"
     assert "secret-key" not in captured.value.details.message
+
+
+@pytest.mark.parametrize(
+    ("status_code", "retryable"),
+    [
+        (408, True),
+        (409, True),
+        (429, True),
+        (500, True),
+        (503, True),
+        (400, False),
+        (401, False),
+        (403, False),
+        (404, False),
+        (422, False),
+    ],
+)
+def test_status_failure_classification(status_code: int, retryable: bool) -> None:
+    request = httpx2.Request("POST", "https://api.example.com/v1/chat/completions")
+    response = httpx2.Response(status_code, request=request)
+    classification = classify_request_failure(
+        APIStatusError("request failed", response=response, body=None)
+    )
+
+    assert classification.retryable is retryable
+    assert classification.transport is False
+    assert classification.transient_api is retryable
 
 
 class FakeCompletions:

@@ -467,7 +467,7 @@ class FakeModel:
         self._responses = iter(responses)
         self.calls: list[str] = []
 
-    def generate_proof(self, statement: str) -> GenerationResult:
+    def generate_proof(self, statement: str, *, reasoning_mode: str = "none") -> GenerationResult:
         self.calls.append(statement)
         return next(self._responses)
 

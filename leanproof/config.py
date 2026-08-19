@@ -12,6 +12,7 @@ from typing import Literal
 from dotenv import load_dotenv
 
 from leanproof.models import ConfigurationError, LLMConfig, ModelRegistry
+from leanproof.prompts import ReasoningMode, validate_reasoning_mode
 
 DEFAULT_CONFIG_PATH = Path("configs/default.toml")
 DEFAULT_RAW_DATA_ROOT = "data/raw"
@@ -20,7 +21,10 @@ DEFAULT_SPLITS_ROOT = "data/splits"
 DEFAULT_ARTIFACT_ROOT = "artifacts"
 DEFAULT_ONE_SHOT_DATASET_PATH = "data/smoke.jsonl"
 DEFAULT_RETRY_DATASET_PATH = "data/smoke.jsonl"
-DEFAULT_GENERATION_TIMEOUT_SECONDS = 300.0
+DEFAULT_CONNECT_TIMEOUT_SECONDS = 10.0
+DEFAULT_READ_TIMEOUT_SECONDS = 300.0
+DEFAULT_WRITE_TIMEOUT_SECONDS = 30.0
+DEFAULT_POOL_TIMEOUT_SECONDS = 10.0
 DEFAULT_VERIFICATION_TIMEOUT_SECONDS = 120.0
 DEFAULT_RETRY_MAX_ATTEMPTS = 4
 DEFAULT_MAX_TRANSPORT_RETRIES = 2
@@ -36,7 +40,10 @@ class ModelDefinition:
     model: str
     api_key_env: str
     reasoning_split: bool = False
-    generation_timeout_seconds: float = DEFAULT_GENERATION_TIMEOUT_SECONDS
+    connect_timeout_seconds: float = DEFAULT_CONNECT_TIMEOUT_SECONDS
+    read_timeout_seconds: float = DEFAULT_READ_TIMEOUT_SECONDS
+    write_timeout_seconds: float = DEFAULT_WRITE_TIMEOUT_SECONDS
+    pool_timeout_seconds: float = DEFAULT_POOL_TIMEOUT_SECONDS
 
 
 @dataclass(frozen=True)
@@ -86,6 +93,7 @@ class OneShotWorkflowConfig:
     model: str | None
     limit: int | None
     max_transport_retries: int
+    reasoning_mode: ReasoningMode
     verbose: bool
 
 
@@ -98,6 +106,7 @@ class RetryWorkflowConfig:
     max_attempts: int
     limit: int | None
     max_transport_retries: int
+    reasoning_mode: ReasoningMode
     verbose: bool
 
 
@@ -125,7 +134,11 @@ class ResolvedExperimentConfig:
     verbose: bool
     retry_max_attempts: int
     max_transport_retries: int
-    generation_timeout_seconds: float
+    reasoning_mode: ReasoningMode
+    connect_timeout_seconds: float
+    read_timeout_seconds: float
+    write_timeout_seconds: float
+    pool_timeout_seconds: float
     verification_timeout_seconds: float
     artifact_root: str
 
@@ -199,6 +212,7 @@ def load_config(config_path: str | Path) -> RuntimeConfig:
                 "max_transport_retries",
                 DEFAULT_MAX_TRANSPORT_RETRIES,
             ),
+            reasoning_mode=_reasoning_mode(one_shot, "reasoning_mode", "prompted"),
             verbose=_boolean(one_shot, "verbose", False),
         ),
         run_retry=RetryWorkflowConfig(
@@ -215,6 +229,7 @@ def load_config(config_path: str | Path) -> RuntimeConfig:
                 "max_transport_retries",
                 DEFAULT_MAX_TRANSPORT_RETRIES,
             ),
+            reasoning_mode=_reasoning_mode(retry, "reasoning_mode", "prompted"),
             verbose=_boolean(retry, "verbose", False),
         ),
     )
@@ -225,7 +240,10 @@ def build_model_registry(
     *,
     dotenv_path: str | Path | None = None,
     required_alias: str | None = None,
-    generation_timeout_seconds: float | None = None,
+    connect_timeout_seconds: float | None = None,
+    read_timeout_seconds: float | None = None,
+    write_timeout_seconds: float | None = None,
+    pool_timeout_seconds: float | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> ModelRegistry:
     """Resolve named API-key environment variables into selectable model configs."""
@@ -246,15 +264,34 @@ def build_model_registry(
             base_url=definition.base_url,
             model=definition.model,
             reasoning_split=definition.reasoning_split,
-            generation_timeout_seconds=definition.generation_timeout_seconds,
+            connect_timeout_seconds=definition.connect_timeout_seconds,
+            read_timeout_seconds=definition.read_timeout_seconds,
+            write_timeout_seconds=definition.write_timeout_seconds,
+            pool_timeout_seconds=definition.pool_timeout_seconds,
             api_key_env=definition.api_key_env,
         )
-        if alias == required_alias and generation_timeout_seconds is not None:
+        if alias == required_alias:
             model_config = replace(
                 model_config,
-                generation_timeout_seconds=_validate_positive_override(
-                    generation_timeout_seconds,
-                    "generation_timeout_seconds",
+                connect_timeout_seconds=_optional_positive_override(
+                    connect_timeout_seconds,
+                    definition.connect_timeout_seconds,
+                    "connect_timeout_seconds",
+                ),
+                read_timeout_seconds=_optional_positive_override(
+                    read_timeout_seconds,
+                    definition.read_timeout_seconds,
+                    "read_timeout_seconds",
+                ),
+                write_timeout_seconds=_optional_positive_override(
+                    write_timeout_seconds,
+                    definition.write_timeout_seconds,
+                    "write_timeout_seconds",
+                ),
+                pool_timeout_seconds=_optional_positive_override(
+                    pool_timeout_seconds,
+                    definition.pool_timeout_seconds,
+                    "pool_timeout_seconds",
                 ),
             )
         configurations[alias] = model_config
@@ -271,7 +308,11 @@ def resolve_experiment_config(
     verbose: bool | None = None,
     retry_max_attempts: int | None = None,
     max_transport_retries: int | None = None,
-    generation_timeout_seconds: float | None = None,
+    reasoning_mode: str | None = None,
+    connect_timeout_seconds: float | None = None,
+    read_timeout_seconds: float | None = None,
+    write_timeout_seconds: float | None = None,
+    pool_timeout_seconds: float | None = None,
     verification_timeout_seconds: float | None = None,
 ) -> ResolvedExperimentConfig:
     """Apply CLI > workflow TOML > built-in fallback for one experiment entrypoint."""
@@ -300,6 +341,11 @@ def resolve_experiment_config(
     )
     if selected_transport_retries < 0:
         raise ConfigurationError("max_transport_retries must be non-negative")
+    selected_reasoning_mode = (
+        workflow_config.reasoning_mode
+        if reasoning_mode is None
+        else _validate_reasoning_mode(reasoning_mode)
+    )
     return ResolvedExperimentConfig(
         dataset_path=dataset_path or workflow_config.dataset,
         model_alias=selected_model,
@@ -307,11 +353,26 @@ def resolve_experiment_config(
         verbose=workflow_config.verbose if verbose is None else verbose,
         retry_max_attempts=selected_attempts,
         max_transport_retries=selected_transport_retries,
-        generation_timeout_seconds=_validate_positive_override(
-            generation_timeout_seconds
-            if generation_timeout_seconds is not None
-            else definition.generation_timeout_seconds,
-            "generation_timeout_seconds",
+        reasoning_mode=selected_reasoning_mode,
+        connect_timeout_seconds=_optional_positive_override(
+            connect_timeout_seconds,
+            definition.connect_timeout_seconds,
+            "connect_timeout_seconds",
+        ),
+        read_timeout_seconds=_optional_positive_override(
+            read_timeout_seconds,
+            definition.read_timeout_seconds,
+            "read_timeout_seconds",
+        ),
+        write_timeout_seconds=_optional_positive_override(
+            write_timeout_seconds,
+            definition.write_timeout_seconds,
+            "write_timeout_seconds",
+        ),
+        pool_timeout_seconds=_optional_positive_override(
+            pool_timeout_seconds,
+            definition.pool_timeout_seconds,
+            "pool_timeout_seconds",
         ),
         verification_timeout_seconds=_validate_positive_override(
             verification_timeout_seconds
@@ -337,15 +398,36 @@ def _validate_workflow_model(
 def _model_definition(alias: str, raw_value: object) -> ModelDefinition:
     if not isinstance(raw_value, dict):
         raise ConfigurationError(f"models.{alias} must be a table")
+    legacy_read_timeout = raw_value.get("generation_timeout_seconds")
+    if "read_timeout_seconds" in raw_value and legacy_read_timeout is not None:
+        raise ConfigurationError(
+            f"models.{alias} cannot define both read_timeout_seconds and generation_timeout_seconds"
+        )
+    read_timeout = (
+        _validate_positive_override(legacy_read_timeout, "generation_timeout_seconds")
+        if legacy_read_timeout is not None
+        else _positive_number(raw_value, "read_timeout_seconds", DEFAULT_READ_TIMEOUT_SECONDS)
+    )
     return ModelDefinition(
         base_url=_string(raw_value, "base_url"),
         model=_string(raw_value, "model"),
         api_key_env=_string(raw_value, "api_key_env"),
         reasoning_split=_boolean(raw_value, "reasoning_split", False),
-        generation_timeout_seconds=_positive_number(
+        connect_timeout_seconds=_positive_number(
             raw_value,
-            "generation_timeout_seconds",
-            DEFAULT_GENERATION_TIMEOUT_SECONDS,
+            "connect_timeout_seconds",
+            DEFAULT_CONNECT_TIMEOUT_SECONDS,
+        ),
+        read_timeout_seconds=read_timeout,
+        write_timeout_seconds=_positive_number(
+            raw_value,
+            "write_timeout_seconds",
+            DEFAULT_WRITE_TIMEOUT_SECONDS,
+        ),
+        pool_timeout_seconds=_positive_number(
+            raw_value,
+            "pool_timeout_seconds",
+            DEFAULT_POOL_TIMEOUT_SECONDS,
         ),
     )
 
@@ -389,6 +471,23 @@ def _validate_positive_override(value: object, name: str) -> float:
     if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
         raise ConfigurationError(f"{name} must be greater than zero")
     return float(value)
+
+
+def _optional_positive_override(value: object, fallback: float, name: str) -> float:
+    return fallback if value is None else _validate_positive_override(value, name)
+
+
+def _validate_reasoning_mode(value: str) -> ReasoningMode:
+    try:
+        return validate_reasoning_mode(value)
+    except ValueError as error:
+        raise ConfigurationError(str(error)) from error
+
+
+def _reasoning_mode(
+    table: Mapping[str, object], name: str, fallback: ReasoningMode
+) -> ReasoningMode:
+    return _validate_reasoning_mode(_string(table, name, fallback))
 
 
 def _positive_integer(table: Mapping[str, object], name: str, fallback: int) -> int:

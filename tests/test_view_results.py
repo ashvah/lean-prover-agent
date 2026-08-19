@@ -156,7 +156,9 @@ def test_html_escapes_all_experiment_text() -> None:
     records = sample_records()
     records[0]["theorem_id"] = 'unsafe"><script>alert(1)</script>'
     records[0]["statement"] = '<script>alert("statement")</script>'
-    records[0]["reasoning_output"] = "<aside>reasoning</aside>"
+    records[0].pop("reasoning_output", None)
+    records[0]["plan_output"] = "<aside>plan</aside>"
+    records[0]["native_reasoning_output"] = "<aside>reasoning</aside>"
     records[0]["proof_output"] = "<mark>proof</mark>"
     records[0]["normalized_proof"] = "</code><img src=x onerror=alert(1)>"
     records[0]["raw_model_output"] = "<b>raw</b>"
@@ -172,6 +174,7 @@ def test_html_escapes_all_experiment_text() -> None:
     assert "</code><img src=x onerror=alert(1)>" not in document
     assert "&lt;script&gt;alert(&quot;statement&quot;)&lt;/script&gt;" in document
     assert "&lt;aside&gt;reasoning&lt;/aside&gt;" in document
+    assert "&lt;aside&gt;plan&lt;/aside&gt;" in document
     assert "&lt;mark&gt;proof&lt;/mark&gt;" in document
     assert "&lt;/code&gt;&lt;img src=x onerror=alert(1)&gt;" in document
     assert "&lt;b&gt;raw&lt;/b&gt;" in document
@@ -198,7 +201,7 @@ def test_html_renders_passed_failed_details_and_filters() -> None:
     assert "REJECTED" in document
     assert document.index("INCOMPLETE") != document.index("REJECTED")
     assert "Benchmark result:" in document
-    assert "Reasoning" in document
+    assert "Provider reasoning (legacy provenance)" in document
     assert "Proof output" in document
     assert "Raw model output" in document
     assert "Lean diagnostics" in document
@@ -206,6 +209,23 @@ def test_html_renders_passed_failed_details_and_filters() -> None:
     assert 'data-filter="passed"' in document
     assert 'data-filter="failed"' in document
     assert 'id="result-search"' in document
+
+
+def test_html_keeps_plan_and_provider_native_reasoning_visibly_separate() -> None:
+    record = sample_records()[0]
+    record.pop("reasoning_output", None)
+    record["reasoning_mode"] = "prompted"
+    record["plan_output"] = "Apply the hypothesis directly."
+    record["native_reasoning_output"] = "private provider scratch work"
+
+    document = build_html([record], calculate_summary([record]), "reasoning.jsonl")
+
+    assert "Reasoning mode: <strong>prompted</strong>" in document
+    assert "<summary>Plan</summary>" in document
+    assert "Apply the hypothesis directly." in document
+    assert "Provider reasoning (audit only)" in document
+    assert "private provider scratch work" in document
+    assert "legacy provenance" not in document
 
 
 def test_all_explicit_verification_statuses_render_distinctly() -> None:

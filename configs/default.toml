@@ -9,28 +9,40 @@ base_url = "https://models.sjtu.edu.cn/api/v1"
 model = "minimax"
 api_key_env = "MINIMAX_API_KEY"
 reasoning_split = true
-generation_timeout_seconds = 300
+connect_timeout_seconds = 10
+read_timeout_seconds = 300
+write_timeout_seconds = 30
+pool_timeout_seconds = 10
 
 [models.deepseek_r]
 base_url = "https://models.sjtu.edu.cn/api/v1"
 model = "deepseek-reasoner"
 api_key_env = "DEEPSEEK_R_API_KEY"
 reasoning_split = true
-generation_timeout_seconds = 300
+connect_timeout_seconds = 10
+read_timeout_seconds = 300
+write_timeout_seconds = 30
+pool_timeout_seconds = 10
 
 [models.deepseek_c]
 base_url = "https://models.sjtu.edu.cn/api/v1"
 model = "deepseek-chat"
 api_key_env = "DEEPSEEK_C_API_KEY"
 reasoning_split = false
-generation_timeout_seconds = 300
+connect_timeout_seconds = 10
+read_timeout_seconds = 300
+write_timeout_seconds = 30
+pool_timeout_seconds = 10
 
 [models.qwen]
 base_url = "https://models.sjtu.edu.cn/api/v1"
 model = "qwen"
 api_key_env = "QWEN_API_KEY"
 reasoning_split = false
-generation_timeout_seconds = 300
+connect_timeout_seconds = 10
+read_timeout_seconds = 300
+write_timeout_seconds = 30
+pool_timeout_seconds = 10
 
 [lean]
 verification_timeout_seconds = 120
@@ -55,6 +67,7 @@ source_file = "0000.jsonl"
 dataset = "data/smoke.jsonl"
 model = "minimax"
 max_transport_retries = 2
+reasoning_mode = "prompted"
 verbose = true
 
 [run_retry]
@@ -62,4 +75,5 @@ dataset = "data/splits/development/0000_medium_50_seed42.jsonl"
 model = "minimax"
 max_attempts = 4
 max_transport_retries = 2
+reasoning_mode = "prompted"
 verbose = true

@@ -18,6 +18,7 @@ from leanproof.models import (
     ProofModel,
     normalize_proof,
 )
+from leanproof.prompts import ReasoningMode
 from leanproof.strategies.common import (
     DEFAULT_MAX_TRANSPORT_RETRIES,
     DatasetError,
@@ -62,12 +63,17 @@ class OneShotResult:
     dataset: str | None
     model_alias: str
     model: str
-    generation_timeout_seconds: float | None
+    reasoning_mode: ReasoningMode
+    connect_timeout_seconds: float | None
+    read_timeout_seconds: float | None
+    write_timeout_seconds: float | None
+    pool_timeout_seconds: float | None
     verification_timeout_seconds: float | None
     max_transport_retries: int
     request_attempts: tuple[RequestAttempt, ...]
     raw_model_output: str
-    reasoning_output: str | None
+    native_reasoning_output: str | None
+    plan_output: str | None
     proof_output: str
     normalized_proof: str
     verification_status: str | None
@@ -79,6 +85,7 @@ class OneShotResult:
     api_requests: int
     request_failures: int
     transport_failures: int
+    transient_api_failures: int
     generations_used: int
     verifier_calls: int
     generation_latency_ms: int
@@ -105,6 +112,7 @@ class OneShotSummary:
     total_api_requests: int
     total_request_failures: int
     total_transport_failures: int
+    total_transient_api_failures: int
     total_generations: int
     total_verifier_calls: int
     average_generation_latency_ms: float
@@ -139,7 +147,11 @@ def run_one_shot(
     model_alias: str,
     dataset: str | None = None,
     max_transport_retries: int = DEFAULT_MAX_TRANSPORT_RETRIES,
-    generation_timeout_seconds: float | None = None,
+    reasoning_mode: ReasoningMode = "none",
+    connect_timeout_seconds: float | None = None,
+    read_timeout_seconds: float | None = None,
+    write_timeout_seconds: float | None = None,
+    pool_timeout_seconds: float | None = None,
     verification_timeout_seconds: float | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> OneShotSummary:
@@ -162,7 +174,11 @@ def run_one_shot(
                 model_alias=model_alias,
                 dataset=dataset,
                 max_transport_retries=max_transport_retries,
-                generation_timeout_seconds=generation_timeout_seconds,
+                reasoning_mode=reasoning_mode,
+                connect_timeout_seconds=connect_timeout_seconds,
+                read_timeout_seconds=read_timeout_seconds,
+                write_timeout_seconds=write_timeout_seconds,
+                pool_timeout_seconds=pool_timeout_seconds,
                 verification_timeout_seconds=verification_timeout_seconds,
                 index=index,
                 total=len(tasks),
@@ -184,7 +200,11 @@ def _run_task_once(
     model_alias: str,
     dataset: str | None,
     max_transport_retries: int,
-    generation_timeout_seconds: float | None,
+    reasoning_mode: ReasoningMode,
+    connect_timeout_seconds: float | None,
+    read_timeout_seconds: float | None,
+    write_timeout_seconds: float | None,
+    pool_timeout_seconds: float | None,
     verification_timeout_seconds: float | None,
     index: int,
     total: int,
@@ -198,6 +218,7 @@ def _run_task_once(
         target_generation_index=1,
         first_request_index=1,
         max_transport_retries=max_transport_retries,
+        reasoning_mode=reasoning_mode,
         progress_prefix=prefix,
         progress_callback=progress_callback,
     )
@@ -215,7 +236,11 @@ def _run_task_once(
             model_alias=model_alias,
             dataset=dataset,
             max_transport_retries=max_transport_retries,
-            generation_timeout_seconds=generation_timeout_seconds,
+            reasoning_mode=reasoning_mode,
+            connect_timeout_seconds=connect_timeout_seconds,
+            read_timeout_seconds=read_timeout_seconds,
+            write_timeout_seconds=write_timeout_seconds,
+            pool_timeout_seconds=pool_timeout_seconds,
             verification_timeout_seconds=verification_timeout_seconds,
             request_attempts=acquisition.request_attempts,
             terminal_status=acquisition.terminal_status or "generation_error",
@@ -234,7 +259,11 @@ def _run_task_once(
             model_alias=model_alias,
             dataset=dataset,
             max_transport_retries=max_transport_retries,
-            generation_timeout_seconds=generation_timeout_seconds,
+            reasoning_mode=reasoning_mode,
+            connect_timeout_seconds=connect_timeout_seconds,
+            read_timeout_seconds=read_timeout_seconds,
+            write_timeout_seconds=write_timeout_seconds,
+            pool_timeout_seconds=pool_timeout_seconds,
             verification_timeout_seconds=verification_timeout_seconds,
             request_attempts=acquisition.request_attempts,
             normalized_proof="",
@@ -262,7 +291,11 @@ def _run_task_once(
             model_alias=model_alias,
             dataset=dataset,
             max_transport_retries=max_transport_retries,
-            generation_timeout_seconds=generation_timeout_seconds,
+            reasoning_mode=reasoning_mode,
+            connect_timeout_seconds=connect_timeout_seconds,
+            read_timeout_seconds=read_timeout_seconds,
+            write_timeout_seconds=write_timeout_seconds,
+            pool_timeout_seconds=pool_timeout_seconds,
             verification_timeout_seconds=verification_timeout_seconds,
             request_attempts=acquisition.request_attempts,
             normalized_proof=normalized_proof,
@@ -271,7 +304,7 @@ def _run_task_once(
             has_sorry=False,
             lean_stdout="",
             lean_stderr="",
-            terminal_status="generation_budget_exhausted",
+            terminal_status="verifier_execution_error",
             verifier_calls=1,
             verification_latency_ms=elapsed_since(verification_started),
             total_latency_ms=elapsed_since(started),
@@ -285,7 +318,11 @@ def _run_task_once(
             model_alias=model_alias,
             dataset=dataset,
             max_transport_retries=max_transport_retries,
-            generation_timeout_seconds=generation_timeout_seconds,
+            reasoning_mode=reasoning_mode,
+            connect_timeout_seconds=connect_timeout_seconds,
+            read_timeout_seconds=read_timeout_seconds,
+            write_timeout_seconds=write_timeout_seconds,
+            pool_timeout_seconds=pool_timeout_seconds,
             verification_timeout_seconds=verification_timeout_seconds,
             request_attempts=acquisition.request_attempts,
             normalized_proof=normalized_proof,
@@ -295,7 +332,11 @@ def _run_task_once(
             lean_stdout=verification.stdout,
             lean_stderr=verification.stderr,
             terminal_status=(
-                "verified" if verification.verified else "generation_budget_exhausted"
+                "verified"
+                if verification.verified
+                else "verifier_execution_error"
+                if verification.status is VerificationStatus.EXECUTION_ERROR
+                else "generation_budget_exhausted"
             ),
             verifier_calls=1,
             verification_latency_ms=verification.elapsed_ms,
@@ -318,7 +359,11 @@ def _base_result(
     model_alias: str,
     dataset: str | None,
     max_transport_retries: int,
-    generation_timeout_seconds: float | None,
+    reasoning_mode: ReasoningMode,
+    connect_timeout_seconds: float | None,
+    read_timeout_seconds: float | None,
+    write_timeout_seconds: float | None,
+    pool_timeout_seconds: float | None,
     verification_timeout_seconds: float | None,
     request_attempts: tuple[RequestAttempt, ...],
     terminal_status: str,
@@ -334,12 +379,17 @@ def _base_result(
         dataset=dataset,
         model_alias=model_alias,
         model=model.model_name,
-        generation_timeout_seconds=generation_timeout_seconds,
+        reasoning_mode=reasoning_mode,
+        connect_timeout_seconds=connect_timeout_seconds,
+        read_timeout_seconds=read_timeout_seconds,
+        write_timeout_seconds=write_timeout_seconds,
+        pool_timeout_seconds=pool_timeout_seconds,
         verification_timeout_seconds=verification_timeout_seconds,
         max_transport_retries=max_transport_retries,
         request_attempts=request_attempts,
         raw_model_output="",
-        reasoning_output=None,
+        native_reasoning_output=None,
+        plan_output=None,
         proof_output="",
         normalized_proof="",
         verification_status=None,
@@ -352,6 +402,9 @@ def _base_result(
         request_failures=sum(request.status != "completed" for request in request_attempts),
         transport_failures=sum(
             request.status == "transport_failure" for request in request_attempts
+        ),
+        transient_api_failures=sum(
+            request.status == "transient_api_failure" for request in request_attempts
         ),
         generations_used=0,
         verifier_calls=0,
@@ -372,7 +425,11 @@ def _generation_result(
     model_alias: str,
     dataset: str | None,
     max_transport_retries: int,
-    generation_timeout_seconds: float | None,
+    reasoning_mode: ReasoningMode,
+    connect_timeout_seconds: float | None,
+    read_timeout_seconds: float | None,
+    write_timeout_seconds: float | None,
+    pool_timeout_seconds: float | None,
     verification_timeout_seconds: float | None,
     request_attempts: tuple[RequestAttempt, ...],
     normalized_proof: str,
@@ -393,7 +450,11 @@ def _generation_result(
         model_alias=model_alias,
         dataset=dataset,
         max_transport_retries=max_transport_retries,
-        generation_timeout_seconds=generation_timeout_seconds,
+        reasoning_mode=reasoning_mode,
+        connect_timeout_seconds=connect_timeout_seconds,
+        read_timeout_seconds=read_timeout_seconds,
+        write_timeout_seconds=write_timeout_seconds,
+        pool_timeout_seconds=pool_timeout_seconds,
         verification_timeout_seconds=verification_timeout_seconds,
         request_attempts=request_attempts,
         terminal_status=terminal_status,
@@ -403,7 +464,8 @@ def _generation_result(
     return replace(
         result,
         raw_model_output=generation.raw_output,
-        reasoning_output=generation.reasoning_output,
+        native_reasoning_output=generation.native_reasoning_output,
+        plan_output=generation.plan_output,
         proof_output=generation.proof_output,
         normalized_proof=normalized_proof,
         verification_status=verification_status,
@@ -429,6 +491,7 @@ def _summarize_results(results: Sequence[OneShotResult], output_path: Path) -> O
         total_api_requests=sum(result.api_requests for result in results),
         total_request_failures=sum(result.request_failures for result in results),
         total_transport_failures=sum(result.transport_failures for result in results),
+        total_transient_api_failures=sum(result.transient_api_failures for result in results),
         total_generations=total_generations,
         total_verifier_calls=total_verifier_calls,
         average_generation_latency_ms=(

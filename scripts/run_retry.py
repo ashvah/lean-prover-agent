@@ -53,14 +53,21 @@ def main(argv: list[str] | None = None) -> int:
             verbose=args.verbose,
             retry_max_attempts=args.max_attempts,
             max_transport_retries=args.max_transport_retries,
-            generation_timeout_seconds=args.generation_timeout_seconds,
+            reasoning_mode=args.reasoning_mode,
+            connect_timeout_seconds=args.connect_timeout_seconds,
+            read_timeout_seconds=args.read_timeout_seconds,
+            write_timeout_seconds=args.write_timeout_seconds,
+            pool_timeout_seconds=args.pool_timeout_seconds,
             verification_timeout_seconds=args.verification_timeout_seconds,
         )
         registry = build_model_registry(
             runtime_config,
             dotenv_path=PROJECT_ROOT / ".env",
             required_alias=resolved.model_alias,
-            generation_timeout_seconds=resolved.generation_timeout_seconds,
+            connect_timeout_seconds=resolved.connect_timeout_seconds,
+            read_timeout_seconds=resolved.read_timeout_seconds,
+            write_timeout_seconds=resolved.write_timeout_seconds,
+            pool_timeout_seconds=resolved.pool_timeout_seconds,
         )
         config = registry.get(resolved.model_alias)
     except ConfigurationError as error:
@@ -97,7 +104,11 @@ def main(argv: list[str] | None = None) -> int:
             max_attempts=resolved.retry_max_attempts,
             max_transport_retries=resolved.max_transport_retries,
             dataset=safe_result_path(PROJECT_ROOT, dataset_path),
-            generation_timeout_seconds=resolved.generation_timeout_seconds,
+            reasoning_mode=resolved.reasoning_mode,
+            connect_timeout_seconds=resolved.connect_timeout_seconds,
+            read_timeout_seconds=resolved.read_timeout_seconds,
+            write_timeout_seconds=resolved.write_timeout_seconds,
+            pool_timeout_seconds=resolved.pool_timeout_seconds,
             verification_timeout_seconds=resolved.verification_timeout_seconds,
             progress_callback=print_progress if resolved.verbose else None,
         )
@@ -109,7 +120,11 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Model alias: {resolved.model_alias}")
     print(f"Provider model: {model.model_name}")
     print(f"Dataset: {dataset_path.as_posix()}")
-    print(f"Generation timeout: {resolved.generation_timeout_seconds:g} s")
+    print(f"Reasoning mode: {resolved.reasoning_mode}")
+    print(f"HTTP connect timeout: {resolved.connect_timeout_seconds:g} s")
+    print(f"HTTP read timeout: {resolved.read_timeout_seconds:g} s")
+    print(f"HTTP write timeout: {resolved.write_timeout_seconds:g} s")
+    print(f"HTTP pool timeout: {resolved.pool_timeout_seconds:g} s")
     print(f"Verification timeout: {resolved.verification_timeout_seconds:g} s")
     print(f"Max transport retries: {resolved.max_transport_retries}")
     print(f"Generation budget: {summary.generation_budget}")
@@ -118,6 +133,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"API requests: {summary.total_api_requests}")
     print(f"Request failures: {summary.total_request_failures}")
     print(f"Transport failures: {summary.total_transport_failures}")
+    print(f"Transient API failures: {summary.total_transient_api_failures}")
     print(f"Completed generations: {summary.total_generations}")
     print(f"Average generations / theorem: {summary.average_generations_per_theorem:.2f}")
     print(

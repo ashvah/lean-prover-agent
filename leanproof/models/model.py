@@ -8,28 +8,19 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 from urllib.parse import urlparse
 
-from openai import APIConnectionError, APIError, APITimeoutError, OpenAI
+from openai import APIConnectionError, APIError, APIStatusError, APITimeoutError, OpenAI, Timeout
 
-DEFAULT_GENERATION_TIMEOUT_SECONDS = 300.0
+from leanproof.prompts import (
+    PromptContractError,
+    ReasoningMode,
+    build_baseline_prompt,
+    parse_baseline_output,
+)
 
-BASELINE_PROMPT_TEMPLATE = """Complete the following Lean 4 theorem.
-
-Your response will be inserted directly after the theorem's `:=`.
-
-Return exactly one complete Lean proof term.
-
-Requirements:
-- The first non-whitespace token must be `by`.
-- Return only the proof.
-- Do not repeat the theorem statement.
-- Do not use Markdown code fences.
-- Do not include explanations, labels, comments, or surrounding text.
-- Do not use `sorry` or `admit`.
-- The proof must be valid Lean 4 code in an environment with Mathlib imported.
-
-Theorem:
-
-{statement}"""
+DEFAULT_CONNECT_TIMEOUT_SECONDS = 10.0
+DEFAULT_READ_TIMEOUT_SECONDS = 300.0
+DEFAULT_WRITE_TIMEOUT_SECONDS = 30.0
+DEFAULT_POOL_TIMEOUT_SECONDS = 10.0
 
 _FENCED_BLOCK_PATTERN = re.compile(
     r"^```[^\r\n]*\r?\n(?P<proof>.*?)\r?\n```[ \t]*(?:\r?\n|\Z)",
@@ -95,13 +86,48 @@ class GenerationRequestError(RuntimeError):
         *,
         retryable: bool,
         transport: bool,
+        transient_api: bool = False,
         elapsed_ms: int | None = None,
     ) -> None:
         super().__init__(details.message)
         self.details = details
         self.retryable = retryable
         self.transport = transport
+        self.transient_api = transient_api
         self.elapsed_ms = elapsed_ms
+
+
+@dataclass(frozen=True)
+class RequestFailureClassification:
+    """Provider failure category used by the bounded request retry loop."""
+
+    retryable: bool
+    transport: bool
+    transient_api: bool
+
+
+def classify_request_failure(error: APIError) -> RequestFailureClassification:
+    """Classify OpenAI-compatible failures without inspecting provider model names."""
+
+    if isinstance(error, (APITimeoutError, APIConnectionError)):
+        return RequestFailureClassification(
+            retryable=True,
+            transport=True,
+            transient_api=False,
+        )
+    if isinstance(error, APIStatusError):
+        status_code = error.status_code
+        retryable = status_code in {408, 409, 429} or 500 <= status_code <= 599
+        return RequestFailureClassification(
+            retryable=retryable,
+            transport=False,
+            transient_api=retryable,
+        )
+    return RequestFailureClassification(
+        retryable=False,
+        transport=False,
+        transient_api=False,
+    )
 
 
 @dataclass(frozen=True)
@@ -112,7 +138,10 @@ class LLMConfig:
     base_url: str
     model: str
     reasoning_split: bool = False
-    generation_timeout_seconds: float = DEFAULT_GENERATION_TIMEOUT_SECONDS
+    connect_timeout_seconds: float = DEFAULT_CONNECT_TIMEOUT_SECONDS
+    read_timeout_seconds: float = DEFAULT_READ_TIMEOUT_SECONDS
+    write_timeout_seconds: float = DEFAULT_WRITE_TIMEOUT_SECONDS
+    pool_timeout_seconds: float = DEFAULT_POOL_TIMEOUT_SECONDS
     api_key_env: str | None = None
 
     def __post_init__(self) -> None:
@@ -127,12 +156,15 @@ class LLMConfig:
             raise ConfigurationError("base_url must not be empty")
         if not model:
             raise ConfigurationError("model must not be empty")
-        if (
-            not isinstance(self.generation_timeout_seconds, (int, float))
-            or isinstance(self.generation_timeout_seconds, bool)
-            or self.generation_timeout_seconds <= 0
+        for field_name in (
+            "connect_timeout_seconds",
+            "read_timeout_seconds",
+            "write_timeout_seconds",
+            "pool_timeout_seconds",
         ):
-            raise ConfigurationError("generation_timeout_seconds must be greater than zero")
+            value = getattr(self, field_name)
+            if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
+                raise ConfigurationError(f"{field_name} must be greater than zero")
 
         parsed_url = urlparse(base_url)
         if (
@@ -160,8 +192,9 @@ class GenerationResult:
 
     raw_output: str
     proof_output: str
-    reasoning_output: str | None
+    native_reasoning_output: str | None
     latency_ms: int
+    plan_output: str | None = None
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
 
@@ -173,7 +206,9 @@ class ProofModel(Protocol):
     def model_name(self) -> str:
         """Return the configured provider model identifier."""
 
-    def generate_proof(self, statement: str) -> GenerationResult:
+    def generate_proof(
+        self, statement: str, *, reasoning_mode: ReasoningMode = "none"
+    ) -> GenerationResult:
         """Generate exactly one complete Lean proof for a theorem statement."""
 
 
@@ -186,7 +221,12 @@ class OpenAICompatibleProofModel:
             api_key=config.api_key,
             base_url=config.base_url,
             max_retries=0,
-            timeout=config.generation_timeout_seconds,
+            timeout=Timeout(
+                connect=config.connect_timeout_seconds,
+                read=config.read_timeout_seconds,
+                write=config.write_timeout_seconds,
+                pool=config.pool_timeout_seconds,
+            ),
         )
 
     @property
@@ -195,13 +235,20 @@ class OpenAICompatibleProofModel:
 
         return self._config.model
 
-    def generate_proof(self, statement: str) -> GenerationResult:
+    def generate_proof(
+        self, statement: str, *, reasoning_mode: ReasoningMode = "none"
+    ) -> GenerationResult:
         """Make one provider request and preserve its textual output unchanged."""
 
         started = time.perf_counter()
         request: dict[str, object] = {
             "model": self._config.model,
-            "messages": [{"role": "user", "content": build_baseline_prompt(statement)}],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": build_baseline_prompt(statement, reasoning_mode),
+                }
+            ],
         }
         if self._config.reasoning_split:
             request["extra_body"] = {"reasoning_split": True}
@@ -209,10 +256,15 @@ class OpenAICompatibleProofModel:
             response = self._client.chat.completions.create(
                 **request,
             )
-        except (APITimeoutError, APIConnectionError) as error:
-            raise self._request_error(error, started, transport=True, retryable=True) from error
         except APIError as error:
-            raise self._request_error(error, started, transport=False, retryable=False) from error
+            classification = classify_request_failure(error)
+            raise self._request_error(
+                error,
+                started,
+                transport=classification.transport,
+                retryable=classification.retryable,
+                transient_api=classification.transient_api,
+            ) from error
         latency_ms = round((time.perf_counter() - started) * 1000)
 
         try:
@@ -224,14 +276,19 @@ class OpenAICompatibleProofModel:
         if not isinstance(raw_output, str):
             raise ProofGenerationError("Provider completion did not contain text")
 
-        proof_output, tagged_reasoning = split_leading_think_block(raw_output)
+        visible_output, tagged_reasoning = split_leading_think_block(raw_output)
         dedicated_reasoning = _dedicated_reasoning_output(message)
+        try:
+            parsed_output = parse_baseline_output(visible_output, reasoning_mode)
+        except PromptContractError as error:
+            raise ProofGenerationError(str(error)) from error
         usage = getattr(response, "usage", None)
         return GenerationResult(
             raw_output=raw_output,
-            proof_output=proof_output,
-            reasoning_output=dedicated_reasoning or tagged_reasoning,
+            proof_output=parsed_output.proof_output,
+            native_reasoning_output=dedicated_reasoning or tagged_reasoning,
             latency_ms=latency_ms,
+            plan_output=parsed_output.plan_output,
             prompt_tokens=getattr(usage, "prompt_tokens", None),
             completion_tokens=getattr(usage, "completion_tokens", None),
         )
@@ -243,6 +300,7 @@ class OpenAICompatibleProofModel:
         *,
         transport: bool,
         retryable: bool,
+        transient_api: bool = False,
     ) -> GenerationRequestError:
         message = str(error).replace(self._config.api_key, "[REDACTED]")
         cause = error.__cause__ or error.__context__
@@ -257,14 +315,9 @@ class OpenAICompatibleProofModel:
             details,
             retryable=retryable,
             transport=transport,
+            transient_api=transient_api,
             elapsed_ms=round((time.perf_counter() - started) * 1000),
         )
-
-
-def build_baseline_prompt(statement: str) -> str:
-    """Insert a theorem statement into the fixed Phase 1 baseline prompt."""
-
-    return BASELINE_PROMPT_TEMPLATE.format(statement=statement)
 
 
 def normalize_proof(proof_output: str) -> str:

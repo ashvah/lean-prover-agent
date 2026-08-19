@@ -16,6 +16,7 @@ from leanproof.models import (
     GenerationResult,
     ProofModel,
 )
+from leanproof.prompts import ReasoningMode
 
 DEFAULT_MAX_TRANSPORT_RETRIES = 2
 
@@ -90,7 +91,7 @@ class RequestAttempt:
 
 @dataclass(frozen=True)
 class GenerationAcquisition:
-    """Result of requesting one completed generation with bounded transport retries."""
+    """Result of requesting one completed generation with bounded request retries."""
 
     generation: GenerationResult | None
     request_attempts: tuple[RequestAttempt, ...]
@@ -105,10 +106,11 @@ def acquire_generation(
     target_generation_index: int,
     first_request_index: int,
     max_transport_retries: int,
+    reasoning_mode: ReasoningMode,
     progress_prefix: str,
     progress_callback: ProgressCallback | None,
 ) -> GenerationAcquisition:
-    """Request one generation; retry only classified transport failures."""
+    """Request one generation; retry only classified retryable request failures."""
 
     if max_transport_retries < 0:
         raise ValueError("max_transport_retries must be non-negative")
@@ -121,12 +123,17 @@ def acquire_generation(
         )
         started = time.perf_counter()
         try:
-            generation = model.generate_proof(statement)
+            generation = model.generate_proof(statement, reasoning_mode=reasoning_mode)
         except GenerationRequestError as error:
             elapsed_ms = (
                 error.elapsed_ms if error.elapsed_ms is not None else elapsed_since(started)
             )
-            status = "transport_failure" if error.transport else "generation_error"
+            if error.transport:
+                status = "transport_failure"
+            elif error.transient_api:
+                status = "transient_api_failure"
+            else:
+                status = "generation_error"
             request_attempts.append(
                 RequestAttempt(
                     request_index=request_index,
@@ -140,13 +147,14 @@ def acquire_generation(
                 progress_callback,
                 f"{progress_prefix} | request {request_index} | {status.upper()} | {elapsed_ms} ms",
             )
-            if error.transport and error.retryable and retry_index < max_transport_retries:
+            if error.retryable and retry_index < max_transport_retries:
                 continue
-            terminal_status = (
-                "transport_retry_exhausted"
-                if error.transport and error.retryable
-                else "generation_error"
-            )
+            if error.transport and error.retryable:
+                terminal_status = "transport_retry_exhausted"
+            elif error.transient_api and error.retryable:
+                terminal_status = "request_retry_exhausted"
+            else:
+                terminal_status = "generation_error"
             return GenerationAcquisition(
                 generation=None,
                 request_attempts=tuple(request_attempts),
