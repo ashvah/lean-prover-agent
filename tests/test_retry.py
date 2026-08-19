@@ -186,6 +186,21 @@ def test_default_path_and_cli_default_identify_retry_budget(tmp_path: Path) -> N
     assert DEFAULT_RESULTS_DIRECTORY == PROJECT_ROOT / "artifacts" / "retry" / "results"
 
 
+def test_cli_preserves_explicit_output_path() -> None:
+    args = build_argument_parser().parse_args(
+        [
+            "--dataset",
+            "data/smoke.jsonl",
+            "--model",
+            "minimax",
+            "--output",
+            "custom/retry.jsonl",
+        ]
+    )
+
+    assert args.output == "custom/retry.jsonl"
+
+
 class FakeModel:
     model_name = "provider-model"
 

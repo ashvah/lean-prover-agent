@@ -25,7 +25,9 @@ def test_main_clears_only_expected_artifact_directories_and_recreates_layout(
     assert exit_code == 0
     assert outside_file.read_text(encoding="utf-8") == "source data"
     assert all(directory.is_dir() for directory in clear_artifacts._artifact_directories())
-    assert all(not any(directory.iterdir()) for directory in clear_artifacts._artifact_directories())
+    assert all(
+        not any(directory.iterdir()) for directory in clear_artifacts._artifact_directories()
+    )
 
 
 def test_clear_directory_rejects_path_outside_fixed_artifact_layout(

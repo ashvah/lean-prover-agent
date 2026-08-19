@@ -4,6 +4,9 @@
 /.pytest_cache/
 /.cache/
 /artifacts/
+/data/raw/
+/data/processed/
+/data/splits/
 /build/
 /*.egg-info/
 __pycache__/

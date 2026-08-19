@@ -100,7 +100,7 @@ def test_multiple_calls_are_isolated(verifier: LeanVerifier) -> None:
 
 def test_timeout_returns_failure(verifier: LeanVerifier) -> None:
     with patch(
-        "leanproof.verifier.subprocess.run",
+        "leanproof.lean.verifier.subprocess.run",
         side_effect=subprocess.TimeoutExpired(cmd="lake", timeout=0.01),
     ):
         result = verifier.verify("example : True", "by trivial")
@@ -111,7 +111,7 @@ def test_timeout_returns_failure(verifier: LeanVerifier) -> None:
 
 
 def test_process_start_failure_returns_execution_error(verifier: LeanVerifier) -> None:
-    with patch("leanproof.verifier.subprocess.run", side_effect=OSError("access denied")):
+    with patch("leanproof.lean.verifier.subprocess.run", side_effect=OSError("access denied")):
         result = verifier.verify("example : True", "by trivial")
 
     assert result.status is VerificationStatus.EXECUTION_ERROR
@@ -129,7 +129,7 @@ def test_nonzero_process_without_lean_diagnostic_is_execution_error(
         stdout="",
         stderr="Lake environment failed before Lean diagnostics were available.",
     )
-    with patch("leanproof.verifier.subprocess.run", return_value=completed):
+    with patch("leanproof.lean.verifier.subprocess.run", return_value=completed):
         result = verifier.verify("example : True", "by trivial")
 
     assert result.status is VerificationStatus.EXECUTION_ERROR

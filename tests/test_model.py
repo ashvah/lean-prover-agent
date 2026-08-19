@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from leanproof.models import (
+from leanproof.models.model import (
     BASELINE_PROMPT_TEMPLATE,
     ConfigurationError,
     LLMConfig,
@@ -157,7 +157,7 @@ def test_dedicated_reasoning_details_are_preserved() -> None:
 def test_default_client_disables_sdk_retries() -> None:
     config = LLMConfig("test-key", "https://api.example.com/v1", "test-model")
 
-    with patch("leanproof.model.OpenAI") as openai_class:
+    with patch("leanproof.models.model.OpenAI") as openai_class:
         OpenAICompatibleProofModel(config)
 
     openai_class.assert_called_once_with(

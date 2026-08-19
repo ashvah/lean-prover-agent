@@ -156,6 +156,21 @@ def test_default_output_filename_includes_model_alias(tmp_path) -> None:
     assert output_path.suffix == ".jsonl"
 
 
+def test_cli_preserves_explicit_output_path() -> None:
+    args = build_argument_parser().parse_args(
+        [
+            "--dataset",
+            "data/smoke.jsonl",
+            "--model",
+            "minimax",
+            "--output",
+            "custom/result.jsonl",
+        ]
+    )
+
+    assert args.output == "custom/result.jsonl"
+
+
 def test_list_models_does_not_require_dataset_or_model(capsys) -> None:
     registry = ModelRegistry(
         {

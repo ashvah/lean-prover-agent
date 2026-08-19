@@ -106,7 +106,7 @@ def load_dataset(dataset_path: str | Path, *, limit: int | None = None) -> list[
 
             if not isinstance(record, dict):
                 raise DatasetError(f"JSONL record must be an object at {path}:{line_number}")
-            theorem_id = record.get("theorem_id")
+            theorem_id = record.get("theorem_id", record.get("id"))
             statement = record.get("statement")
             if not isinstance(theorem_id, str) or not theorem_id.strip():
                 raise DatasetError(f"Missing theorem_id at {path}:{line_number}")

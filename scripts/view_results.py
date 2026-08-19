@@ -212,7 +212,9 @@ def default_artifact_paths(
         artifact_root = artifacts_root / strategy
     else:
         artifact_root = (
-            source_path.parent.parent if source_path.parent.name == "results" else source_path.parent
+            source_path.parent.parent
+            if source_path.parent.name == "results"
+            else source_path.parent
         )
     return GeneratedArtifacts(
         html_path=artifact_root / "reports" / f"{source_path.stem}.html",

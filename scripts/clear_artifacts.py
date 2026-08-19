@@ -50,7 +50,7 @@ def main() -> int:
     for directory in _artifact_directories():
         removed = _clear_directory(directory)
         total_removed += removed
-        print(f"{directory.relative_to(PROJECT_ROOT)}: removed {removed} item(s)")
+        print(f"{directory.relative_to(ARTIFACT_ROOT.parent)}: removed {removed} item(s)")
 
     print(f"Total removed: {total_removed} item(s)")
     return 0
