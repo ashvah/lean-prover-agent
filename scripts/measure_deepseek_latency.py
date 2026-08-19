@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sys
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from openai import OpenAI
@@ -13,7 +13,6 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from leanproof.config import build_model_registry, load_config
 from leanproof.models import OpenAICompatibleProofModel
-
 
 MODEL_ALIAS = "deepseek_r"
 
@@ -70,7 +69,7 @@ def main() -> int:
         print()
         print(f"Interrupted after {elapsed:.2f} s ({elapsed / 60:.2f} min)")
         return 130
-    except Exception as error:
+    except Exception as error: # noqa: BLE001
         elapsed = time.perf_counter() - started
         print()
         print(f"Request failed after {elapsed:.2f} s")
@@ -123,7 +122,7 @@ def main() -> int:
     output_directory = PROJECT_ROOT / "artifacts" / "diagnostics"
     output_directory.mkdir(parents=True, exist_ok=True)
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     output_path = output_directory / f"deepseek_latency_{timestamp}.json"
 
     record = {
